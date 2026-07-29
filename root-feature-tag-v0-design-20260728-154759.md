@@ -689,6 +689,42 @@ contacts, user-level installation, and bulk operations are explicitly deferred.
 Implementation remains blocked until the operator provisions a dedicated test
 contact and approved test tag or designates a controlled production test pair.
 
+## Test Strategy
+
+The project uses `pytest` and `pytest-cov` as development dependencies managed by
+`uv`. Tests are organized by boundary:
+
+- `tests/unit/`: pure command parsing, typed models, allowlist validation,
+  matching, application-policy branches, error normalization, and redaction.
+- `tests/integration/`: `StateStore` behavior against temporary real SQLite
+  databases, `FluentCrmClient` behavior against a standard-library local HTTP
+  server, and application flows using those real adapters.
+- `tests/subprocess/`: complete CLI stdin/stdout/stderr and exit-code behavior,
+  concurrent invocations, process interruption, and recovery from durable
+  `started` journals.
+- `tests/contract/`: assertions against the committed redacted FluentCRM contract
+  fixture.
+- `tests/agent/`: project-local skill contract and confirmation scenarios.
+- `tests/live/`: explicitly gated capability and controlled acceptance checks;
+  these never run in the default suite or unattended CI.
+
+Fixtures inject deterministic clocks and UUID generators into `application.py`.
+Database tests use `tmp_path` with real files and separate connections rather
+than mocking SQLite. HTTP integration tests use a local
+`ThreadingHTTPServer`-based fixture so request methods, paths, bodies, pagination,
+timeouts, and retry counts are observed at the wire boundary. Subprocess tests
+invoke the installed project entry point and assert that stdout contains exactly
+one JSON object while stderr contains no representative secrets.
+
+The default command is:
+
+```bash
+uv run pytest --cov=iranfluent_tag_operator --cov-branch --cov-report=term-missing
+```
+
+The default suite must have no external network dependency and must never read
+production credentials.
+
 ## Success Criteria
 
 Version one is complete when:
