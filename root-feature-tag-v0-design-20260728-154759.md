@@ -403,6 +403,27 @@ the contract check proves the API performs an additive single-tag mutation. If
 the API requires submitting a complete tag set, implementation stops and the
 design must be revised.
 
+### Local Database Lifecycle
+
+The CLI opens and validates the private SQLite database before making any
+FluentCRM API request. It uses `PRAGMA user_version` as the schema version:
+
+- A new database with `user_version = 0` and no application tables is initialized
+  inside one exclusive transaction. The CLI creates all version-one tables,
+  constraints, and indexes, sets `user_version = 1`, and commits.
+- An existing version-one database must have `user_version = 1` and the expected
+  tables, columns, constraints, and indexes. Validation is read-only.
+- Any unsupported version, unexpected application table, missing schema object,
+  failed integrity check, or partially initialized database returns exit code `5`
+  with `local_state_invalid`. The CLI makes no FluentCRM request.
+- Version one performs no upgrade migration. Any future schema version must add
+  an explicit, transactional, tested migration and a private pre-migration backup
+  before code using that version may open the database for normal operation.
+
+Tests must cover first initialization, reopening a valid database, concurrent
+first initialization, unsupported older and newer versions, missing schema
+objects, failed integrity checks, and a simulated interrupted initialization.
+
 ### Audit Record
 
 Store append-only audit rows in the same authoritative SQLite database as preview
@@ -538,7 +559,8 @@ Version one is complete when:
 - Credentials and authorization data are absent from the repository, command
   output, test fixtures, and audit logs.
 - Unit tests cover matching, allowlist validation, stale previews, audit
-  redaction, already-attached behavior, and error normalization.
+  redaction, already-attached behavior, schema initialization and validation, and
+  error normalization.
 - Integration tests cover successful preview/write/verify, unknown write outcome,
   authentication failure, and verification failure against a fake FluentCRM HTTP
   server.
