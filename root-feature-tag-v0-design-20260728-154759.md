@@ -223,6 +223,51 @@ invoke the CLI could execute a live preview, so the database and its parent
 directory must be owned by the operator, inaccessible to other users, and never
 exposed to untrusted processes.
 
+### Implementation Structure
+
+The Python package uses six responsibility-bearing modules under
+`src/iranfluent_tag_operator/`:
+
+- `cli.py`: reads one JSON command from stdin, calls the application layer,
+  serializes one JSON response, writes diagnostics to stderr, and maps normalized
+  errors to exit codes.
+- `application.py`: implements preview, execute, cancel, and reconcile
+  orchestration and policy sequencing. It receives the client, state store,
+  clock, and request-ID generator as dependencies and contains no direct HTTP,
+  SQLite, environment, or terminal access.
+- `fluentcrm.py`: contains the `FluentCrmClient`, request construction,
+  pagination, method-specific timeout/retry policy, response parsing, and remote
+  error normalization.
+- `state.py`: contains the `StateStore`, schema initialization and validation,
+  preview claims, execution journals, append-only audit inserts, retention
+  cleanup, and transaction boundaries.
+- `models.py`: contains typed immutable command, response, entity, outcome, and
+  error-category values plus their JSON serialization rules.
+- `config.py`: strictly loads and validates required environment variables and
+  the committed tag allowlist without logging secret values.
+
+`__init__.py` contains no behavior. `pyproject.toml`, the reviewed allowlist data,
+tests, and the project-local Codex skill are supporting artifacts rather than
+additional application layers. No module may import `cli.py`; `fluentcrm.py` and
+`state.py` do not import each other.
+
+```text
+Natural-language request
+          |
+          v
+Project-local Codex skill
+          |
+          v
+       cli.py  <------- config.py
+          |
+          v
+   application.py <---- models.py
+       /       \
+      v         v
+fluentcrm.py  state.py
+   REST API    SQLite
+```
+
 ### Structured Operation Contract
 
 The CLI exposes `preview`, `execute`, `cancel`, and `reconcile` commands. Each
