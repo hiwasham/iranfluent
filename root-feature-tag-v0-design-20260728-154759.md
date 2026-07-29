@@ -279,6 +279,30 @@ request. The invocation form is:
 uv run iranfluent-tag-operator < preview.json
 ```
 
+Input parsing is strict and dependency-free:
+
+- Read at most 16 KiB from stdin and require valid UTF-8 without a byte-order
+  mark. Empty or oversized input is rejected.
+- Parse exactly one JSON object followed only by whitespace. Reject duplicate
+  object keys, trailing JSON values, arrays, scalars, and `null`.
+- Reject unknown fields, missing fields, and type coercion. A JSON number,
+  boolean, or `null` never satisfies a string field.
+- `preview` accepts exactly `command`, `operation`, `email`, and `tag_key`.
+  `operation` must be `add_tag`; `tag_key` must be `vocab_b1`; email must be at
+  most 254 characters with exactly one `@` and non-empty local and domain parts
+  before the matching rules run.
+- `execute`, `cancel`, and `reconcile` each accept exactly `command` and
+  `request_id`. Request IDs must be canonical lowercase, hyphenated UUIDv4
+  strings.
+- Invalid input produces the normalized input-rejection response and required
+  rejection audit row, but performs no FluentCRM request and creates, consumes,
+  or changes no preview or execution-journal record.
+
+Parser tests cover the accepted shapes plus empty input, invalid UTF-8, byte-order
+marks, oversize input, duplicate keys, trailing values, unknown or missing fields,
+wrong JSON types, unsupported commands and operations, malformed emails, and
+noncanonical or non-v4 UUIDs.
+
 It uses exit code `0` for a completed command,
 `2` for policy or input rejection, `3` for authentication/authorization failure,
 `4` for transport or remote API failure, and `5` for an unknown or failed
