@@ -312,7 +312,7 @@ It is stored in a private SQLite database outside the repository with mode
 `0600`, expires after 10 minutes, and may be consumed once. No signing key is
 required because the CLI trusts only its own private database record, not state
 supplied by the caller. SQLite is authoritative for preview lifecycle state,
-execution journals, and audit delivery indexes. Preview creation, claim,
+execution journals, and append-only audit records. Preview creation, claim,
 consumption, cancellation, and expiry use transactions and uniqueness constraints
 rather than filesystem record locks.
 
@@ -331,11 +331,10 @@ conditional.
 
 Execute, cancel, expiry cleanup, and reconcile change request state through short
 SQLite transactions. Execute atomically claims an unexpired preview with a
-conditional update that can affect exactly one row. It then commits the durable
-execution journal before issuing the remote mutation and persists the
-`execution_started` audit event according to the audit-storage decision below.
-If either required persistence step fails, the claim is released and no remote
-write occurs.
+conditional update that can affect exactly one row. In the same transaction it
+creates the durable execution journal and append-only `execution_started` audit
+row before issuing the remote mutation. If the transaction fails, the claim is
+rolled back and no remote write occurs.
 
 If preview finds the exact tag already attached, it returns a terminal
 `already_attached: true` response, appends `preview_noop`, creates no consumable
@@ -389,14 +388,14 @@ All error responses use:
 5. Re-fetch contact and tag state.
 6. Reject stale previews.
 7. Atomically claim the preview through a conditional SQLite update.
-8. Commit a durable SQLite execution journal containing request ID, contact ID,
-   tag ID, pre-write tag IDs, and `started` state, then durably persist
-   `execution_started`.
+8. In one SQLite transaction, commit a durable execution journal containing
+   request ID, contact ID, tag ID, pre-write tag IDs, and `started` state plus an
+   append-only `execution_started` audit row.
 9. Attach the tag through the verified contact segment synchronization contract.
 10. Re-fetch the contact through a fresh API request.
 11. Succeed only if the exact tag ID is present.
-12. Atomically record the terminal state in the SQLite execution journal, then
-    durably persist one terminal execution event.
+12. In one SQLite transaction, record the terminal execution-journal state and
+    append one terminal audit row.
 
 The final pre-write read and write are not atomic. Version one accepts the
 residual risk that another operator could change tags in that interval only after
@@ -406,11 +405,19 @@ design must be revised.
 
 ### Audit Record
 
-Store immutable JSONL events in
-`$XDG_STATE_HOME/iranfluent-tag-operator/audit.jsonl`, falling back to
-`~/.local/state/iranfluent-tag-operator/audit.jsonl`. The directory and file use
-mode `0700` and `0600`. Each append is serialized with an advisory file lock,
-written as one encoded line, flushed, and `fsync`ed before the lock is released.
+Store append-only audit rows in the same authoritative SQLite database as preview
+and execution state:
+`$XDG_STATE_HOME/iranfluent-tag-operator/state.sqlite3`, falling back to
+`~/.local/state/iranfluent-tag-operator/state.sqlite3`. The directory and
+database use mode `0700` and `0600`. The audit table has a monotonic sequence
+number and permits inserts only through the repository's audit API; operator
+code never updates or deletes audit rows. SQLite runs with foreign keys enabled,
+`journal_mode=WAL`, and `synchronous=FULL`.
+
+SQLite is the only source of truth. A read-only export may serialize audit rows
+in sequence order as JSONL for human inspection or archival, but the operator
+never reads that export for preview validation, recovery, reconciliation, or
+audit-delivery decisions. JSONL export is optional for version one.
 
 Preview and execution create separate events linked by request ID:
 `preview_created`, `preview_noop`, `preview_rejected`, `preview_expired`,
@@ -426,16 +433,17 @@ reconcile request produces an event. Malformed JSON that cannot yield a request
 ID produces `preview_rejected` with a null request ID.
 
 Audit is fail-closed before mutation. Startup preflight requires the audit HMAC
-key, writable state directory, working locks, and successful create/flush/fsync
-probes. Preview, cancel, and reconcile fail if their audit event cannot be
-persisted. Execute never mutates unless its journal and `execution_started` event
-are durable.
+key, private writable state directory, successful database integrity and
+permission checks, and a successful `BEGIN IMMEDIATE`/`ROLLBACK` write-lock
+probe. Preview, cancel, and reconcile fail if their state change and audit row
+cannot commit together. Execute never mutates unless its claimed preview,
+`started` journal, and `execution_started` audit row commit in one transaction.
 
-If a terminal audit append fails after a mutation, the terminal result remains
-in the durable SQLite execution journal with `audit_pending: true`; the command
-returns exit code `5` and `audit_incomplete`. The next reconcile retries the
-missing terminal event before reporting current CRM state. This preserves a
-recoverable record even when the audit append fails.
+After mutation, the terminal journal update and terminal audit row commit in one
+transaction. If that transaction fails, the durable `started` journal remains;
+the command returns exit code `5` and `audit_incomplete`. A later reconcile reads
+the `started` journal, checks current CRM state, and appends a reconciliation row.
+It never fabricates the missing terminal event or retries the write.
 
 Fields required for every event are:
 
@@ -496,7 +504,7 @@ outcome remains immutable.
 
 SQLite execution journals and expired preview tombstones are retained for 90
 days, then deleted by transactional cleanup during a later invocation. Audit
-events are not deleted by the tool. Reconciliation after journal deletion returns
+rows are not deleted by the tool. Reconciliation after journal deletion returns
 `unknown` with nullable operation and entity fields.
 
 ## Open Questions
@@ -518,9 +526,9 @@ Version one is complete when:
 - Zero writes occur for partial, missing, duplicate, non-allowlisted, or stale
   inputs.
 - Repeating an already-completed request returns a verified no-op.
-- Every preview, execute, cancel, and reconcile request has the required immutable
-  audit event, or a durable `audit_pending` execution journal when a terminal
-  append fails after mutation.
+- Every preview, execute, cancel, and reconcile request has the required
+  append-only audit row, or a durable `started` execution journal when the
+  terminal transaction fails after mutation.
 - Every reported success has a fresh post-write API read showing the exact tag ID
   attached.
 - Credentials and authorization data are absent from the repository, command
@@ -535,7 +543,7 @@ Version one is complete when:
 - Tests cover terminal preview-time no-op, explicit cancellation, preview expiry,
   and reconciliation of execution records with no terminal event.
 - Concurrency tests prove preview-state single use, durable SQLite state
-  transitions, and serialized audit writes.
+  transitions, and serialized audit inserts.
 - One controlled end-to-end acceptance test succeeds using a dedicated test
   contact and approved test tag.
 - No tag creation, removal, bulk mutation, or unattended confirmation path is
@@ -549,8 +557,8 @@ Version one is complete when:
 - Credentials: dedicated FluentCRM manager credentials loaded from Infisical into
   process environment variables, including a separate audit HMAC key.
 - Configuration: reviewed allowlist committed without secrets.
-- State and audit: private SQLite state plus the selected audit representation,
-  both outside the Git repository.
+- State and audit: one private authoritative SQLite database outside the Git
+  repository; optional JSONL is a derived read-only export.
 - Version one is run from the repository with `uv run`; packaging and user-level
   installation are deferred.
 - Installation, contract-check, and validation commands will be defined by
