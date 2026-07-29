@@ -719,8 +719,21 @@ one JSON object while stderr contains no representative secrets.
 The default command is:
 
 ```bash
-uv run pytest --cov=iranfluent_tag_operator --cov-branch --cov-report=term-missing
+uv run pytest --cov=iranfluent_tag_operator --cov-branch \
+  --cov-report=term-missing --cov-fail-under=100
 ```
+
+`pyproject.toml` configures coverage to measure every production module under
+`src/iranfluent_tag_operator`, with branch measurement enabled and
+`fail_under = 100`. Any missed statement or branch therefore fails the suite.
+Test files, contract fixtures, and the project-local skill are validated by their
+own tests but are not counted as production Python coverage.
+
+Unexplained `# pragma: no cover` and file-level omissions are prohibited. A
+future exclusion requires a specific comment explaining why the path is
+unreachable plus an explicit design-review update. The numeric gate does not
+replace the mapped integration, concurrency, subprocess, agent, and controlled
+acceptance scenarios.
 
 The default suite must have no external network dependency and must never read
 production credentials.
@@ -761,6 +774,8 @@ Version one is complete when:
   and reconciliation of execution records with no terminal event.
 - Concurrency tests prove preview-state single use, durable SQLite state
   transitions, serialized audit inserts, and bounded lock-timeout behavior.
+- The production Python package maintains 100% statement and branch coverage
+  without unexplained coverage exclusions.
 - One controlled end-to-end acceptance test succeeds using a dedicated test
   contact and approved test tag.
 - No tag creation, removal, bulk mutation, or unattended confirmation path is
