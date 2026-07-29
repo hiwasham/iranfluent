@@ -411,6 +411,40 @@ All error responses use:
 }
 ```
 
+`models.py` defines one closed `ErrorCategory` enum and one authoritative
+category-to-exit-code mapping:
+
+- Exit `2`, input or pre-write policy rejection: `invalid_json`,
+  `invalid_command`, `invalid_email`, `unsupported_operation`,
+  `contact_not_found`, `contact_ambiguous`, `tag_not_allowed`,
+  `tag_definition_mismatch`, `contact_status_rejected`, `preview_missing`,
+  `preview_expired`, `preview_consumed`, and `stale_preview`.
+- Exit `3`, identity rejection: `authentication_failed` and
+  `authorization_failed`.
+- Exit `4`, remote read or protocol failure before a known mutation outcome:
+  `remote_transport_failed`, `remote_rate_limited`, `remote_server_error`, and
+  `remote_response_invalid`.
+- Exit `5`, local durability or mutation-outcome failure:
+  `local_state_busy`, `local_state_invalid`, `audit_incomplete`,
+  `execution_outcome_unknown`, `execution_verification_failed`, and
+  `internal_error`.
+
+Every failure is represented internally as an immutable `CommandError` containing
+the enum category, a predefined safe message, nullable request ID, nullable HTTP
+status, and `mutation_attempted` boolean. The exit code is derived only from the
+central mapping. Success and no-op outcomes are not represented as errors.
+
+Module-specific exceptions are normalized at their module boundary. An
+unexpected exception becomes `internal_error`; raw exception text, response
+bodies, database paths, credentials, and authorization data never enter stdout
+or audit rows. Stderr may include a sanitized diagnostic and request ID. When
+`mutation_attempted` is true, the response directs the operator to reconcile and
+never recommends executing the request again.
+
+Tests enumerate every `ErrorCategory`, prove that each has exactly one safe
+message and exit-code mapping, snapshot the public JSON shape, and verify that
+unknown exception text and representative secret values are redacted.
+
 ### Matching Rules
 
 - Trim leading and trailing whitespace and lowercase the email before lookup.
