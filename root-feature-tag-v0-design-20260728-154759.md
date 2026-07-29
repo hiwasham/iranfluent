@@ -305,6 +305,36 @@ The CLI resolves `tag_key` through a reviewed allowlist containing:
 - risk note;
 - enabled/disabled state.
 
+The allowlist is committed as `config/tags.json`:
+
+```json
+{
+  "schema_version": 1,
+  "tags": [
+    {
+      "key": "vocab_b1",
+      "id": 269,
+      "title": "set_vocab_B1",
+      "slug": "set_vocab_b1",
+      "purpose": "Enable B1 vocabulary",
+      "risk_note": "May unlock access or trigger FluentCRM automations.",
+      "enabled": true
+    }
+  ]
+}
+```
+
+`config.py` parses this file with the Python standard library into immutable
+`TagDefinition` values before any FluentCRM request. It rejects unknown or
+missing fields, wrong JSON types, duplicate keys, IDs, or slugs, unsupported
+schema versions, and malformed JSON. Version one requires exactly one entry with
+key `vocab_b1`; changing its identity fields or adding another entry requires
+reviewing and updating this design. Environment variables and command input
+cannot override allowlist values or the allowlist path.
+
+Tests cover the accepted fixture and every rejection rule, including duplicates
+that differ only by key or slug case.
+
 The preview response contains:
 
 ```json
@@ -655,8 +685,9 @@ Version one is complete when:
   output, test fixtures, and audit logs.
 - Unit tests cover matching, allowlist validation, stale previews, audit
   redaction, already-attached behavior, schema initialization and validation, and
-  error normalization. Repository tests prove normal operator code cannot update
-  or delete audit rows.
+  error normalization. Allowlist tests cover its strict schema and duplicate
+  detection. Repository tests prove normal operator code cannot update or delete
+  audit rows.
 - Integration tests cover successful preview/write/verify, unknown write outcome,
   authentication failure, and verification failure against a fake FluentCRM HTTP
   server.
