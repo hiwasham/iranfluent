@@ -517,8 +517,17 @@ After a mutation starts, a timeout, connection loss, non-success response, or
 verification mismatch may occur even if FluentCRM applied the write. These are
 mutation-attempted outcomes, not pre-write rejections.
 
+Every FluentCRM request uses a 3-second connection timeout and a 10-second
+response timeout. Read-only requests made during preview, pre-write validation,
+and reconciliation may retry once after a transport error or HTTP `429`, `502`,
+`503`, or `504`. The retry honors `Retry-After` up to 5 seconds; otherwise it
+uses a bounded 1-second delay. Authentication failures and other `4xx` responses
+are never retried.
+
 No write is retried automatically. After an ambiguous write response, the CLI
-performs up to three fresh reads at 1, 2, and 4 seconds:
+performs up to three fresh reads at 1, 2, and 4 seconds. The mutation request is
+issued exactly once, and these verification reads do not use the read-only
+request retry policy:
 
 - If the exact tag appears, return `execution_recovered`.
 - If the write response was ambiguous and the tag remains absent, return
@@ -572,6 +581,10 @@ Version one is complete when:
 - Integration tests cover successful preview/write/verify, unknown write outcome,
   authentication failure, and verification failure against a fake FluentCRM HTTP
   server.
+- HTTP-policy tests prove that eligible read requests retry at most once, `401`
+  and `403` never retry, `Retry-After` is capped, mutation POST requests are sent
+  exactly once, and verification polling performs exactly the documented reads
+  without nested retries.
 - Agent-layer tests prove that execute is called only after explicit confirmation
   of the matching request ID and displayed change.
 - Tests cover terminal preview-time no-op, explicit cancellation, preview expiry,
