@@ -412,7 +412,11 @@ and execution state:
 database use mode `0700` and `0600`. The audit table has a monotonic sequence
 number and permits inserts only through the repository's audit API; operator
 code never updates or deletes audit rows. SQLite runs with foreign keys enabled,
-`journal_mode=WAL`, and `synchronous=FULL`.
+`journal_mode=DELETE`, `synchronous=FULL`, and a 5-second busy timeout. The
+rollback journal is transient and must inherit the private state-directory
+permissions. If the CLI cannot acquire the local write lock within 5 seconds, it
+returns a local-state error before any remote mutation. This local lock wait is
+not a retry of a FluentCRM write.
 
 SQLite is the only source of truth. A read-only export may serialize audit rows
 in sequence order as JSONL for human inspection or archival, but the operator
@@ -543,7 +547,7 @@ Version one is complete when:
 - Tests cover terminal preview-time no-op, explicit cancellation, preview expiry,
   and reconciliation of execution records with no terminal event.
 - Concurrency tests prove preview-state single use, durable SQLite state
-  transitions, and serialized audit inserts.
+  transitions, serialized audit inserts, and bounded lock-timeout behavior.
 - One controlled end-to-end acceptance test succeeds using a dedicated test
   contact and approved test tag.
 - No tag creation, removal, bulk mutation, or unattended confirmation path is
