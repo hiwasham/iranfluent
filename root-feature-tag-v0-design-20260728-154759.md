@@ -444,6 +444,13 @@ in sequence order as JSONL for human inspection or archival, but the operator
 never reads that export for preview validation, recovery, reconciliation, or
 audit-delivery decisions. JSONL export is optional for version one.
 
+The audit is append-only at the application boundary, not tamper-proof against
+the trusted local operator. Version one assumes that the OS user who owns the
+database and the operator who can load the Infisical credentials are trusted.
+Direct SQLite modification is unsupported and outside the threat model. The
+audit HMAC key protects normalized-email correlation from dictionary attacks; it
+does not sign audit rows or claim to detect malicious history rewriting.
+
 Preview and execution create separate events linked by request ID:
 `preview_created`, `preview_noop`, `preview_rejected`, `preview_expired`,
 `execution_started`, `execution_cancelled`, `execution_rejected`,
@@ -560,7 +567,8 @@ Version one is complete when:
   output, test fixtures, and audit logs.
 - Unit tests cover matching, allowlist validation, stale previews, audit
   redaction, already-attached behavior, schema initialization and validation, and
-  error normalization.
+  error normalization. Repository tests prove normal operator code cannot update
+  or delete audit rows.
 - Integration tests cover successful preview/write/verify, unknown write outcome,
   authentication failure, and verification failure against a fake FluentCRM HTTP
   server.
