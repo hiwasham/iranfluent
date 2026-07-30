@@ -371,6 +371,13 @@ The allowlist is committed as `config/tags.json`:
       "slug": "set_vocab_b1",
       "purpose": "Enable B1 vocabulary",
       "risk_note": "May unlock access or trigger FluentCRM automations.",
+      "business_reviewed_at": "2026-07-30T00:00:00Z",
+      "business_review_expires_at": "2026-08-29T00:00:00Z",
+      "business_reviewer": "operator",
+      "known_downstream_effects": [
+        "May unlock B1 vocabulary access.",
+        "May trigger FluentCRM automations."
+      ],
       "enabled": true
     }
   ]
@@ -385,8 +392,17 @@ key `vocab_b1`; changing its identity fields or adding another entry requires
 reviewing and updating this design. Environment variables and command input
 cannot override allowlist values or the allowlist path.
 
+The business review timestamps, reviewer, and known downstream effects are part
+of the reviewed tag definition. `business_review_expires_at` may be at most 30
+days after `business_reviewed_at`. Preview and execute reject an expired or
+invalid approval as `business_approval_stale` before any mutation. Renewal
+requires an operator to inspect the tag's current access, email, and automation
+effects in WordPress and commit the updated review fields. The contact-scoped API
+identity is not granted broader automation-management permissions for this check.
+
 Tests cover the accepted fixture and every rejection rule, including duplicates
-that differ only by key or slug case.
+that differ only by key or slug case, malformed review timestamps, expiry beyond
+30 days, and the exact expiry boundary.
 
 The preview response contains:
 
@@ -501,7 +517,8 @@ category-to-exit-code mapping:
   `invalid_command`, `invalid_email`, `unsupported_operation`,
   `contact_not_found`, `contact_ambiguous`, `tag_not_allowed`,
   `tag_definition_mismatch`, `contact_status_rejected`, `preview_missing`,
-  `preview_expired`, `preview_consumed`, `stale_preview`, and `contract_stale`.
+  `preview_expired`, `preview_consumed`, `stale_preview`, `contract_stale`, and
+  `business_approval_stale`.
 - Exit `3`, identity rejection: `authentication_failed` and
   `authorization_failed`.
 - Exit `4`, remote read or protocol failure before a known mutation outcome:
@@ -939,6 +956,8 @@ Version one is complete when:
 - Infisical entries for API base URL, username, and Application Password.
 - A separate Infisical audit HMAC key generated for this tool.
 - Initial tag allowlist with business purpose and risk notes.
+- A current manual review of the `vocab_b1` tag's downstream access, email, and
+  automation effects, valid for no more than 30 days.
 - Two dedicated subscribed test contacts that initially lack tag `269`, one
   reserved for the contract probe and one for final acceptance.
 - A successful redacted API contract/capability check proving lookup, tag read,
@@ -953,8 +972,9 @@ Contacts and Manage Contacts permissions, generate its REST credentials, and sto
 the base URL, username, Application Password, and a newly generated audit HMAC key
 in Infisical under a new tool-specific prefix. Provision the two reserved test
 contacts, verify that both initially lack tag `269`, and review their downstream
-automation effects. Do not reuse the WordPress administrator credentials used for
-the manual browser workflow.
+automation effects. Review the current downstream effects of tag `269` in
+WordPress and commit the time-limited business approval fields. Do not reuse the
+WordPress administrator credentials used for the manual browser workflow.
 
 ## Reviewer Concerns
 
