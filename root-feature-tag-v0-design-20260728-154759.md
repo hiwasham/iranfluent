@@ -536,7 +536,7 @@ category-to-exit-code mapping:
   `authorization_failed`.
 - Exit `4`, remote read or protocol failure before a known mutation outcome:
   `remote_transport_failed`, `remote_rate_limited`, `remote_server_error`, and
-  `remote_response_invalid`.
+  `remote_response_invalid`, and `operation_deadline_exceeded`.
 - Exit `5`, local durability or mutation-outcome failure:
   `runtime_identity_invalid`, `audit_unavailable`, `local_state_busy`,
   `local_state_invalid`, `audit_incomplete`, `execution_outcome_unknown`,
@@ -581,10 +581,13 @@ page. It rejects immediately after finding a second exact match.
 Pagination must follow the contract fixture's page-number or cursor semantics.
 The client tracks visited page identifiers and rejects repeated, missing,
 nonmonotonic, or contradictory pagination metadata as
-`remote_response_invalid`. A hard ceiling of 100 pages applies even if remote
-metadata claims more; exceeding it fails closed with no write. This bounds memory
-to one response page and lookup state rather than the complete contact result
-set.
+`remote_response_invalid`. The committed fixture defines separate reviewed page
+limits for contact search and tag lookup based on the probed endpoint filtering,
+page size, and pagination behavior. Runtime uses the lower of that endpoint limit
+and an absolute 100-page corruption guard. Exceeding either limit fails closed
+with no write and requires a refreshed contract fixture if legitimate data
+growth caused it. This bounds memory to one response page and lookup state rather
+than the complete contact result set.
 
 Tag lookup streams pages until the reviewed tag ID is found, then validates its
 title and slug against the allowlist. If the endpoint supports a direct tag-by-ID
@@ -810,16 +813,26 @@ verification mismatch may occur even if FluentCRM applied the write. These are
 mutation-attempted outcomes, not pre-write rejections.
 
 Every FluentCRM request uses a 3-second connection timeout and a 10-second
-response timeout. Read-only requests made during preview, pre-write validation,
-and reconciliation may retry once after a transport error or HTTP `429`, `502`,
-`503`, or `504`. The retry honors `Retry-After` up to 5 seconds; otherwise it
-uses a bounded 1-second delay. Authentication failures and other `4xx` responses
-are never retried.
+response timeout, each clipped to the remaining monotonic phase deadline. Preview,
+reconciliation, and execute-before-dispatch each receive a 20-second total
+deadline starting immediately before their first FluentCRM request. Exhausting
+that deadline before dispatch returns `operation_deadline_exceeded` and performs
+no mutation. The under-15-second preview target remains the normal-condition SLO;
+20 seconds is the hard safety bound.
+
+Read-only requests made during preview, pre-write validation, and reconciliation
+may retry once after a transport error or HTTP `429`, `502`, `503`, or `504`.
+The retry honors `Retry-After` up to 5 seconds; otherwise it uses a bounded
+1-second delay. Retry waits are clipped to the remaining phase budget, and no
+retry starts without enough time for a positive request timeout. Authentication
+failures and other `4xx` responses are never retried.
 
 No write is retried automatically. After an ambiguous write response, the CLI
 performs up to three fresh reads at 1, 2, and 4 seconds. The mutation request is
-issued exactly once, and these verification reads do not use the read-only
-request retry policy:
+issued exactly once. Committing `dispatching` starts a separate 45-second
+post-dispatch deadline covering the mutation request, scheduled waits, and
+verification reads. These reads do not use the read-only request retry policy,
+and every request and wait is clipped to the remaining post-dispatch budget:
 
 - If the exact tag appears and every pre-write tag remains, return
   `execution_recovered`.
@@ -828,6 +841,8 @@ request retry policy:
 - Return `execution_verification_failed` only when FluentCRM confirmed a
   successful write response but a fresh read does not contain the tag, or when
   any fresh post-write read shows that a pre-write tag disappeared.
+- If the post-dispatch deadline expires without decisive state evidence, return
+  terminal `execution_outcome_unknown`; never convert it to a pre-write timeout.
 
 Successful and recovered outcomes require:
 
@@ -1020,21 +1035,25 @@ Version one is complete when:
   authentication failure, and verification failure against a fake FluentCRM HTTP
   server.
 - Contract tests cover matching and mismatched site identity, exposed plugin/API
-  versions, response-shape markers, exact 30-day expiry boundaries, and the
-  no-version-endpoint fallback.
+  versions, response-shape markers, reviewed endpoint page limits, exact 30-day
+  expiry boundaries, and the no-version-endpoint fallback.
 - Verification tests prove success when all pre-write tags plus the target remain,
   tolerate and report concurrent additions, and fail critically when any
   pre-write tag disappears.
 - HTTP-policy tests prove that eligible read requests retry at most once, `401`
   and `403` never retry, `Retry-After` is capped, mutation POST requests are sent
   exactly once, and verification polling performs exactly the documented reads
-  without nested retries.
+  without nested retries. Fake-monotonic-clock tests cover exact 20-second
+  pre-dispatch and 45-second post-dispatch boundaries, timeout clipping, retry
+  delay clipping, and the rule that deadline exhaustion after dispatch becomes
+  `execution_outcome_unknown`.
 - Parameterized mutation-outcome tests cover every row of the dispatch matrix,
   including state changes after nominal rejection responses and verification-read
   failures.
 - Pagination tests cover multi-page exact matching, duplicate exact matches,
   direct and paginated tag lookup, repeated or contradictory page metadata, the
-  100-page safety ceiling, and bounded retained results.
+  fixture-defined endpoint limits, the absolute 100-page safety ceiling, and
+  bounded retained results.
 - Agent-layer transcript tests cover execute only after explicit confirmation of
   the matching request ID and displayed change, while documenting the trusted
   skill boundary and its non-cryptographic limitation.
