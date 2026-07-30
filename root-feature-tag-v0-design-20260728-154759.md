@@ -512,6 +512,30 @@ unknown exception text and representative secret values are redacted.
 - If the tag is already attached, return a verified no-op. This is idempotent:
   repeating the same request does not create an additional change.
 
+### Pagination and Caching
+
+Contact lookup always sends the normalized email through the documented
+server-side search parameter, then validates results client-side one page at a
+time. The client retains at most two exact matches and discards each processed
+page. It rejects immediately after finding a second exact match.
+
+Pagination must follow the contract fixture's page-number or cursor semantics.
+The client tracks visited page identifiers and rejects repeated, missing,
+nonmonotonic, or contradictory pagination metadata as
+`remote_response_invalid`. A hard ceiling of 100 pages applies even if remote
+metadata claims more; exceeding it fails closed with no write. This bounds memory
+to one response page and lookup state rather than the complete contact result
+set.
+
+Tag lookup streams pages until the reviewed tag ID is found, then validates its
+title and slug against the allowlist. If the endpoint supports a direct tag-by-ID
+read in the verified contract, the client uses that narrower operation instead.
+It never trusts search ranking or an unvalidated first result.
+
+No contact, tag, or authorization result is cached across CLI invocations.
+Preview and execute intentionally perform fresh reads because stale remote state
+is more dangerous than the small latency saved by caching.
+
 ### Mutation and Verification
 
 1. Fetch the contact and current tags.
@@ -800,6 +824,9 @@ Version one is complete when:
   and `403` never retry, `Retry-After` is capped, mutation POST requests are sent
   exactly once, and verification polling performs exactly the documented reads
   without nested retries.
+- Pagination tests cover multi-page exact matching, duplicate exact matches,
+  direct and paginated tag lookup, repeated or contradictory page metadata, the
+  100-page safety ceiling, and bounded retained results.
 - Agent-layer transcript tests cover execute only after explicit confirmation of
   the matching request ID and displayed change, while documenting the trusted
   skill boundary and its non-cryptographic limitation.
