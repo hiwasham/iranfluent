@@ -518,7 +518,8 @@ category-to-exit-code mapping:
   `contact_not_found`, `contact_ambiguous`, `tag_not_allowed`,
   `tag_definition_mismatch`, `contact_status_rejected`, `preview_missing`,
   `preview_expired`, `preview_consumed`, `stale_preview`, `contract_stale`, and
-  `business_approval_stale`.
+  `business_approval_stale`; a contract-defined post-dispatch rejection uses
+  `remote_rejected` with `mutation_attempted = true`.
 - Exit `3`, identity rejection: `authentication_failed` and
   `authorization_failed`.
 - Exit `4`, remote read or protocol failure before a known mutation outcome:
@@ -759,6 +760,23 @@ audited as `concurrent_added_tag_ids`. Missing pre-write IDs are returned and
 audited as `missing_pre_write_tag_ids`, produce
 `execution_verification_failed`, and never trigger an automatic repair or retry.
 
+Mutation outcome classification follows this matrix:
+
+| Evidence | Verification | Result |
+|---|---|---|
+| Failure proven before the mutation client is invoked | None | Pre-write `remote_transport_failed`, `mutation_attempted = false` |
+| Contract-valid `2xx` success response | One immediate fresh read | `succeeded` only when target and preservation checks pass; otherwise `execution_verification_failed` |
+| Contract-defined `400`, `404`, `409`, or `422` rejection | One immediate fresh read | `remote_rejected` only when state is unchanged; otherwise classify from observed state |
+| Contract-defined `401` or `403` rejection | One immediate fresh read | Authentication or authorization error only when state is unchanged; otherwise classify from observed state |
+| Timeout, disconnect, redirect, `408`, `425`, `429`, any `5xx`, malformed `2xx`, or unrecognized response after invocation | Reads at 1, 2, and 4 seconds | `execution_recovered` if target and preservation pass; `execution_verification_failed` if prior tags disappeared; otherwise `execution_outcome_unknown` |
+| Required verification reads cannot establish state | Remaining bounded reads, if any | `execution_outcome_unknown` unless a successful read already observed destructive tag loss |
+
+The application sets `mutation_attempted = true` immediately before invoking the
+mutation client. From that point onward, no transport or HTTP condition is
+returned as an ordinary pre-write exit-`4` failure. A contract-defined rejection
+is definitive only when the committed fixture defines its status and response
+shape and a fresh read confirms the complete pre-write tag state is unchanged.
+
 A separate read-only stdin command,
 `{"command":"reconcile","request_id":"uuid"}`, may be run later. It uses the
 durable execution journal, reports current tag presence, and appends a
@@ -908,6 +926,9 @@ Version one is complete when:
   and `403` never retry, `Retry-After` is capped, mutation POST requests are sent
   exactly once, and verification polling performs exactly the documented reads
   without nested retries.
+- Parameterized mutation-outcome tests cover every row of the dispatch matrix,
+  including state changes after nominal rejection responses and verification-read
+  failures.
 - Pagination tests cover multi-page exact matching, duplicate exact matches,
   direct and paginated tag lookup, repeated or contradictory page metadata, the
   100-page safety ceiling, and bounded retained results.
