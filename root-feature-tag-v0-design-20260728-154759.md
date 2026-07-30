@@ -704,7 +704,8 @@ The project uses `pytest` and `pytest-cov` as development dependencies managed b
   `started` journals.
 - `tests/contract/`: assertions against the committed redacted FluentCRM contract
   fixture.
-- `tests/agent/`: project-local skill contract and confirmation scenarios.
+- `tests/agent/`: project-local skill contract and confirmation transcript
+  scenarios using a fake CLI executable that records every invocation and input.
 - `tests/live/`: explicitly gated read-only capability checks; these never run in
   the default suite or unattended CI and contain no mutation request.
 
@@ -715,6 +716,13 @@ than mocking SQLite. HTTP integration tests use a local
 timeouts, and retry counts are observed at the wire boundary. Subprocess tests
 invoke the installed project entry point and assert that stdout contains exactly
 one JSON object while stderr contains no representative secrets.
+
+Agent transcript tests cover matching request-ID confirmation, wrong-ID approval,
+ambiguous replies, silence, explicit decline, and terminal already-attached
+no-op. They assert which exact CLI command would be invoked and that rejected
+scenarios invoke no `execute` command. These are behavior regression tests for
+the trusted project-local skill, not technical proof that a human rather than a
+faulty or bypassed agent approved the operation.
 
 The default command is:
 
@@ -792,8 +800,9 @@ Version one is complete when:
   and `403` never retry, `Retry-After` is capped, mutation POST requests are sent
   exactly once, and verification polling performs exactly the documented reads
   without nested retries.
-- Agent-layer tests prove that execute is called only after explicit confirmation
-  of the matching request ID and displayed change.
+- Agent-layer transcript tests cover execute only after explicit confirmation of
+  the matching request ID and displayed change, while documenting the trusted
+  skill boundary and its non-cryptographic limitation.
 - Tests cover terminal preview-time no-op, explicit cancellation, preview expiry,
   and reconciliation of execution records with no terminal event.
 - Concurrency tests prove preview-state single use, durable SQLite state
