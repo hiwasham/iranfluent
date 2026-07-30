@@ -705,8 +705,8 @@ The project uses `pytest` and `pytest-cov` as development dependencies managed b
 - `tests/contract/`: assertions against the committed redacted FluentCRM contract
   fixture.
 - `tests/agent/`: project-local skill contract and confirmation scenarios.
-- `tests/live/`: explicitly gated capability and controlled acceptance checks;
-  these never run in the default suite or unattended CI.
+- `tests/live/`: explicitly gated read-only capability checks; these never run in
+  the default suite or unattended CI and contain no mutation request.
 
 Fixtures inject deterministic clocks and UUID generators into `application.py`.
 Database tests use `tmp_path` with real files and separate connections rather
@@ -737,6 +737,30 @@ acceptance scenarios.
 
 The default suite must have no external network dependency and must never read
 production credentials.
+
+### Live Contract and Acceptance Safety
+
+No pytest command may mutate FluentCRM. Live mutation validation uses two manual
+stages:
+
+1. Before production operator implementation, a narrow
+   `scripts/fluentcrm_contract_probe.py` performs the documented read-only
+   capability checks, displays the masked dedicated test contact, selected test
+   tag, and complete pre-write tag IDs, then requires an attached TTY and an exact
+   typed confirmation containing the displayed contact ID and tag slug before
+   issuing one mutation request. It provides no confirmation flag, environment
+   bypass, stdin pipe, or unattended mode. After the write it performs a fresh
+   read, proves the selected tag is present and all unrelated pre-write tags
+   remain, and writes only the redacted contract fixture.
+2. After implementation, the final acceptance check runs through the actual
+   project-local skill and guarded CLI using their normal preview and
+   confirmation flow against the designated test pair.
+
+Both stages send at most one mutation request, never remove a tag as cleanup, and
+stop on any identity, permission, contract, or unrelated-tag mismatch. The
+operator must review possible automation side effects when designating the test
+pair. Live commands are documented separately from the default test command and
+are never invoked by CI.
 
 ## Success Criteria
 
@@ -776,8 +800,9 @@ Version one is complete when:
   transitions, serialized audit inserts, and bounded lock-timeout behavior.
 - The production Python package maintains 100% statement and branch coverage
   without unexplained coverage exclusions.
-- One controlled end-to-end acceptance test succeeds using a dedicated test
-  contact and approved test tag.
+- One manually confirmed contract-probe mutation and one manually confirmed
+  end-to-end operator acceptance succeed using the designated test pair; neither
+  is executable through pytest or unattended CI.
 - No tag creation, removal, bulk mutation, or unattended confirmation path is
   exposed.
 
