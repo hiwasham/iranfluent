@@ -140,6 +140,22 @@ the dedicated API identity must run a controlled contract check that records:
 The result is committed as a redacted contract fixture. No production operator
 code is written until the check proves that unrelated tags are preserved.
 
+The fixture records its UTC generation and expiry timestamps, normalized site
+identity, FluentCRM/plugin version when exposed, REST namespace, endpoint paths,
+pagination mode, required response keys and types, mutation request shape, and
+success-response markers. It expires 30 days after generation.
+
+Before every preview and execute, the CLI performs a read-only compatibility
+preflight against the fixture. It compares the exact site and REST namespace,
+the live plugin/API version when available, and stable response-shape markers
+from the required read endpoints. A version, site, namespace, or schema mismatch,
+or an expired fixture, returns `contract_stale` with exit code `2` before any
+mutation. If FluentCRM exposes no reliable version value, the 30-day expiry plus
+response-shape checks remain mandatory.
+
+Refreshing the fixture requires rerunning the manually confirmed contract probe.
+Runtime code never edits or silently renews the committed fixture.
+
 The design therefore treats the REST API as the stable execution boundary and the
 agent as an input and presentation layer only.
 
@@ -485,7 +501,7 @@ category-to-exit-code mapping:
   `invalid_command`, `invalid_email`, `unsupported_operation`,
   `contact_not_found`, `contact_ambiguous`, `tag_not_allowed`,
   `tag_definition_mismatch`, `contact_status_rejected`, `preview_missing`,
-  `preview_expired`, `preview_consumed`, and `stale_preview`.
+  `preview_expired`, `preview_consumed`, `stale_preview`, and `contract_stale`.
 - Exit `3`, identity rejection: `authentication_failed` and
   `authorization_failed`.
 - Exit `4`, remote read or protocol failure before a known mutation outcome:
@@ -770,7 +786,7 @@ The project uses `pytest` and `pytest-cov` as development dependencies managed b
   concurrent invocations, process interruption, and recovery from durable
   `started` journals.
 - `tests/contract/`: assertions against the committed redacted FluentCRM contract
-  fixture.
+  fixture, its site/version/schema fingerprint, and its expiry behavior.
 - `tests/agent/`: project-local skill contract and confirmation transcript
   scenarios using a fake CLI executable that records every invocation and input.
 - `tests/live/`: explicitly gated read-only capability checks; these never run in
@@ -863,6 +879,9 @@ Version one is complete when:
 - Integration tests cover successful preview/write/verify, unknown write outcome,
   authentication failure, and verification failure against a fake FluentCRM HTTP
   server.
+- Contract tests cover matching and mismatched site identity, exposed plugin/API
+  versions, response-shape markers, exact 30-day expiry boundaries, and the
+  no-version-endpoint fallback.
 - Verification tests prove success when all pre-write tags plus the target remain,
   tolerate and report concurrent additions, and fail critically when any
   pre-write tag disappears.
