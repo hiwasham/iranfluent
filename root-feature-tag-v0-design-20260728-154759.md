@@ -581,6 +581,10 @@ Tests must cover first initialization, reopening a valid database, concurrent
 first initialization, unsupported older and newer versions, missing schema
 objects, failed integrity checks, and a simulated interrupted initialization.
 
+Version-one indexes include preview state plus expiry, execution-journal state
+plus terminal timestamp, and audit request ID plus monotonic sequence. Primary
+keys cover direct request-ID lookups.
+
 ### Audit Record
 
 Store append-only audit rows in the same authoritative SQLite database as preview
@@ -701,9 +705,18 @@ observed tag does not prove which actor attached it, so the original unknown
 outcome remains immutable.
 
 SQLite execution journals and expired preview tombstones are retained for 90
-days, then deleted by transactional cleanup during a later invocation. Audit
-rows are not deleted by the tool. Reconciliation after journal deletion returns
-`unknown` with nullable operation and entity fields.
+days. After schema validation, each invocation may process at most 100 eligible
+preview or journal rows, oldest first, in one short maintenance transaction.
+Expiring an abandoned preview inserts its `preview_expired` audit row in the same
+transaction that removes its consumable state. Terminal journals older than 90
+days may be deleted; audit rows are never deleted by the tool.
+
+Maintenance is best-effort and separate from the requested command transaction.
+Lock contention or cleanup failure emits a sanitized stderr warning but does not
+change command semantics; the command must still independently acquire its
+required transaction before any remote write. The CLI never runs automatic
+`VACUUM`. Reconciliation after journal deletion returns `unknown` with nullable
+operation and entity fields.
 
 ## Open Questions
 
@@ -834,6 +847,9 @@ Version one is complete when:
   and reconciliation of execution records with no terminal event.
 - Concurrency tests prove preview-state single use, durable SQLite state
   transitions, serialized audit inserts, and bounded lock-timeout behavior.
+- Maintenance tests seed more than 100 expired rows and prove each invocation
+  processes at most 100 using the expected indexes, preserves every audit row,
+  and never runs `VACUUM`.
 - The production Python package maintains 100% statement and branch coverage
   without unexplained coverage exclusions.
 - One manually confirmed contract-probe mutation and one manually confirmed
