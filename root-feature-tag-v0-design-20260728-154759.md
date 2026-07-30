@@ -550,7 +550,8 @@ is more dangerous than the small latency saved by caching.
    append-only `execution_started` audit row.
 9. Attach the tag through the verified contact segment synchronization contract.
 10. Re-fetch the contact through a fresh API request.
-11. Succeed only if the exact tag ID is present.
+11. Succeed only if the exact tag ID is present and every pre-write tag ID remains
+    present. Record any additional post-write tag IDs as concurrent additions.
 12. In one SQLite transaction, record the terminal execution-journal state and
     append one terminal audit row.
 
@@ -690,11 +691,27 @@ performs up to three fresh reads at 1, 2, and 4 seconds. The mutation request is
 issued exactly once, and these verification reads do not use the read-only
 request retry policy:
 
-- If the exact tag appears, return `execution_recovered`.
+- If the exact tag appears and every pre-write tag remains, return
+  `execution_recovered`.
 - If the write response was ambiguous and the tag remains absent, return
   `execution_outcome_unknown`, even if all immediate reads succeed.
 - Return `execution_verification_failed` only when FluentCRM confirmed a
-  successful write response but a fresh read does not contain the tag.
+  successful write response but a fresh read does not contain the tag, or when
+  any fresh post-write read shows that a pre-write tag disappeared.
+
+Successful and recovered outcomes require:
+
+```text
+target_tag_id in post_write_tag_ids
+and
+pre_write_tag_ids is a subset of post_write_tag_ids
+```
+
+Additional post-write tag IDs do not fail the operation because another operator
+may have added them during the unavoidable race window. They are returned and
+audited as `concurrent_added_tag_ids`. Missing pre-write IDs are returned and
+audited as `missing_pre_write_tag_ids`, produce
+`execution_verification_failed`, and never trigger an automatic repair or retry.
 
 A separate read-only stdin command,
 `{"command":"reconcile","request_id":"uuid"}`, may be run later. It uses the
@@ -833,6 +850,9 @@ Version one is complete when:
 - Integration tests cover successful preview/write/verify, unknown write outcome,
   authentication failure, and verification failure against a fake FluentCRM HTTP
   server.
+- Verification tests prove success when all pre-write tags plus the target remain,
+  tolerate and report concurrent additions, and fail critically when any
+  pre-write tag disappears.
 - HTTP-policy tests prove that eligible read requests retry at most once, `401`
   and `403` never retry, `Retry-After` is capped, mutation POST requests are sent
   exactly once, and verification polling performs exactly the documented reads
