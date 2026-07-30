@@ -769,8 +769,9 @@ operation and entity fields.
 None for version one. Additional tag keys, centralized logging, non-subscribed
 contacts, user-level installation, and bulk operations are explicitly deferred.
 
-Implementation remains blocked until the operator provisions a dedicated test
-contact and approved test tag or designates a controlled production test pair.
+Implementation remains blocked until the operator provisions two dedicated
+subscribed test contacts with the approved `vocab_b1` tag initially absent. One
+contact is reserved for the contract probe and one for final acceptance.
 
 ## Test Strategy
 
@@ -836,22 +837,23 @@ stages:
 
 1. Before production operator implementation, a narrow
    `scripts/fluentcrm_contract_probe.py` performs the documented read-only
-   capability checks, displays the masked dedicated test contact, selected test
-   tag, and complete pre-write tag IDs, then requires an attached TTY and an exact
-   typed confirmation containing the displayed contact ID and tag slug before
-   issuing one mutation request. It provides no confirmation flag, environment
-   bypass, stdin pipe, or unattended mode. After the write it performs a fresh
-   read, proves the selected tag is present and all unrelated pre-write tags
-   remain, and writes only the redacted contract fixture.
+   capability checks against the reserved contract-probe contact, displays its
+   masked identity, the `vocab_b1` tag, and complete pre-write tag IDs, then
+   requires an attached TTY and an exact typed confirmation containing the
+   displayed contact ID and tag slug before issuing one mutation request. It
+   provides no confirmation flag, environment bypass, stdin pipe, or unattended
+   mode. After the write it performs a fresh read, proves the selected tag is
+   present and all unrelated pre-write tags remain, and writes only the redacted
+   contract fixture.
 2. After implementation, the final acceptance check runs through the actual
    project-local skill and guarded CLI using their normal preview and
-   confirmation flow against the designated test pair.
+   confirmation flow against the separate reserved acceptance contact.
 
 Both stages send at most one mutation request, never remove a tag as cleanup, and
 stop on any identity, permission, contract, or unrelated-tag mismatch. The
-operator must review possible automation side effects when designating the test
-pair. Live commands are documented separately from the default test command and
-are never invoked by CI.
+operator must review possible automation side effects for both contacts before
+designating them. Live commands are documented separately from the default test
+command and are never invoked by CI.
 
 ## Success Criteria
 
@@ -905,8 +907,9 @@ Version one is complete when:
 - The production Python package maintains 100% statement and branch coverage
   without unexplained coverage exclusions.
 - One manually confirmed contract-probe mutation and one manually confirmed
-  end-to-end operator acceptance succeed using the designated test pair; neither
-  is executable through pytest or unattended CI.
+  end-to-end operator acceptance succeed using separate reserved contacts that
+  initially lack tag `269`; neither is executable through pytest or unattended
+  CI.
 - No tag creation, removal, bulk mutation, or unattended confirmation path is
   exposed by the supported project-local workflow.
 
@@ -936,7 +939,8 @@ Version one is complete when:
 - Infisical entries for API base URL, username, and Application Password.
 - A separate Infisical audit HMAC key generated for this tool.
 - Initial tag allowlist with business purpose and risk notes.
-- A dedicated test contact and approved test tag.
+- Two dedicated subscribed test contacts that initially lack tag `269`, one
+  reserved for the contract probe and one for final acceptance.
 - A successful redacted API contract/capability check proving lookup, tag read,
   additive mutation, and fresh read-back with the dedicated manager.
 - `/plan-ceo-review` followed by `/plan-eng-review` before implementation, per the
@@ -947,9 +951,10 @@ Version one is complete when:
 Before implementation, create a dedicated FluentCRM API manager that has only View
 Contacts and Manage Contacts permissions, generate its REST credentials, and store
 the base URL, username, Application Password, and a newly generated audit HMAC key
-in Infisical under a new tool-specific prefix. Provision a dedicated test contact
-and approved test tag for the contract check. Do not reuse the WordPress
-administrator credentials used for the manual browser workflow.
+in Infisical under a new tool-specific prefix. Provision the two reserved test
+contacts, verify that both initially lack tag `269`, and review their downstream
+automation effects. Do not reuse the WordPress administrator credentials used for
+the manual browser workflow.
 
 ## Reviewer Concerns
 
