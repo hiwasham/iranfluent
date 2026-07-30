@@ -476,9 +476,14 @@ conditional.
 Execute, cancel, expiry cleanup, and reconcile change request state through short
 SQLite transactions. Execute atomically claims an unexpired preview with a
 conditional update that can affect exactly one row. In the same transaction it
-creates the durable execution journal and append-only `execution_started` audit
-row before issuing the remote mutation. If the transaction fails, the claim is
-rolled back and no remote write occurs.
+creates the durable execution journal in `claimed` state and appends an
+`execution_claimed` audit row. A later execute for the same request ID may resume
+a `claimed` journal only after fresh contact and tag reads still match its stored
+pre-write state. Immediately before invoking the mutation client, a separate
+transaction changes the journal to `dispatching` and appends
+`execution_dispatching`. If either transaction fails, no remote write occurs.
+Once `dispatching` commits, recovery treats the outcome as potentially mutated
+and never repeats the write.
 
 If preview finds the exact tag already attached, it returns a terminal
 `already_attached: true` response, appends `preview_noop`, creates no consumable
@@ -593,14 +598,22 @@ is more dangerous than the small latency saved by caching.
 6. Reject stale previews.
 7. Atomically claim the preview through a conditional SQLite update.
 8. In one SQLite transaction, commit a durable execution journal containing
-   request ID, contact ID, tag ID, pre-write tag IDs, and `started` state plus an
-   append-only `execution_started` audit row.
-9. Attach the tag through the verified contact segment synchronization contract.
-10. Re-fetch the contact through a fresh API request.
-11. Succeed only if the exact tag ID is present and every pre-write tag ID remains
+   request ID, contact ID, tag ID, pre-write tag IDs, and `claimed` state plus an
+   append-only `execution_claimed` audit row.
+9. In a separate SQLite transaction, change the journal to `dispatching` and
+   append `execution_dispatching`.
+10. Attach the tag through the verified contact segment synchronization contract.
+11. Re-fetch the contact through a fresh API request.
+12. Succeed only if the exact tag ID is present and every pre-write tag ID remains
     present. Record any additional post-write tag IDs as concurrent additions.
-12. In one SQLite transaction, record the terminal execution-journal state and
+13. In one SQLite transaction, record the terminal execution-journal state and
     append one terminal audit row.
+
+If a process stops with a `claimed` journal, a repeated execute may resume from
+step 5 and must revalidate the full stored pre-write state before dispatch. If a
+process stops with a `dispatching` journal, execute returns
+`execution_outcome_unknown` without issuing a mutation and directs the operator
+to reconcile.
 
 The final pre-write read and write are not atomic. Version one accepts the
 residual risk that another operator could change tags in that interval only after
@@ -662,7 +675,8 @@ does not sign audit rows or claim to detect malicious history rewriting.
 
 Preview and execution create separate events linked by request ID:
 `preview_created`, `preview_noop`, `preview_rejected`, `preview_expired`,
-`execution_started`, `execution_cancelled`, `execution_rejected`,
+`execution_claimed`, `execution_dispatching`, `execution_cancelled`,
+`execution_rejected`,
 `execution_succeeded`,
 `execution_recovered`, `execution_verification_failed`, or
 `execution_outcome_unknown`. Reconciliation appends one of
@@ -678,13 +692,16 @@ key, private writable state directory, successful database integrity and
 permission checks, and a successful `BEGIN IMMEDIATE`/`ROLLBACK` write-lock
 probe. Preview, cancel, and reconcile fail if their state change and audit row
 cannot commit together. Execute never mutates unless its claimed preview,
-`started` journal, and `execution_started` audit row commit in one transaction.
+`claimed` journal, and `execution_claimed` audit row commit in one transaction,
+followed by a committed transition to `dispatching` with its
+`execution_dispatching` audit row.
 
 After mutation, the terminal journal update and terminal audit row commit in one
-transaction. If that transaction fails, the durable `started` journal remains;
-the command returns exit code `5` and `audit_incomplete`. A later reconcile reads
-the `started` journal, checks current CRM state, and appends a reconciliation row.
-It never fabricates the missing terminal event or retries the write.
+transaction. If that transaction fails, the durable `dispatching` journal
+remains; the command returns exit code `5` and `audit_incomplete`. A later
+reconcile reads the `dispatching` journal, checks current CRM state, and appends a
+reconciliation row. It never fabricates the missing terminal event or retries the
+write.
 
 Fields required for every event are:
 
@@ -780,10 +797,12 @@ shape and a fresh read confirms the complete pre-write tag state is unchanged.
 A separate read-only stdin command,
 `{"command":"reconcile","request_id":"uuid"}`, may be run later. It uses the
 durable execution journal, reports current tag presence, and appends a
-reconciliation event but never repeats the write. It also handles
-`execution_started` records with no terminal event after a process crash. A later
-observed tag does not prove which actor attached it, so the original unknown
-outcome remains immutable.
+reconciliation event but never repeats the write. It handles `dispatching`
+records with no terminal event after a process crash. A `claimed` record is known
+not to have invoked the mutation client and may instead be resumed by execute
+after full fresh-state validation. A later observed tag for a `dispatching`
+record does not prove which actor attached it, so the original unknown outcome
+remains immutable.
 
 SQLite execution journals and expired preview tombstones are retained for 90
 days. After schema validation, each invocation may process at most 100 eligible
@@ -820,7 +839,7 @@ The project uses `pytest` and `pytest-cov` as development dependencies managed b
   server, and application flows using those real adapters.
 - `tests/subprocess/`: complete CLI stdin/stdout/stderr and exit-code behavior,
   concurrent invocations, process interruption, and recovery from durable
-  `started` journals.
+  `claimed` and `dispatching` journals.
 - `tests/contract/`: assertions against the committed redacted FluentCRM contract
   fixture, its site/version/schema fingerprint, and its expiry behavior.
 - `tests/agent/`: project-local skill contract and confirmation transcript
@@ -902,7 +921,7 @@ Version one is complete when:
   inputs.
 - Repeating an already-completed request returns a verified no-op.
 - Every preview, execute, cancel, and reconcile request has the required
-  append-only audit row, or a durable `started` execution journal when the
+  append-only audit row, or a durable `dispatching` execution journal when the
   terminal transaction fails after mutation.
 - Every reported success has a fresh post-write API read showing the exact tag ID
   attached.
@@ -936,7 +955,8 @@ Version one is complete when:
   the matching request ID and displayed change, while documenting the trusted
   skill boundary and its non-cryptographic limitation.
 - Tests cover terminal preview-time no-op, explicit cancellation, preview expiry,
-  and reconciliation of execution records with no terminal event.
+  safe resume of `claimed` records, refusal to repeat writes for `dispatching`
+  records, and reconciliation of `dispatching` records with no terminal event.
 - Concurrency tests prove preview-state single use, durable SQLite state
   transitions, serialized audit inserts, and bounded lock-timeout behavior.
 - Maintenance tests seed more than 100 expired rows and prove each invocation
