@@ -214,7 +214,8 @@ Choose **Approach C**, delivered in two internal milestones:
 
 The agent may interpret intent, explain choices, present the preview, and invoke
 execution after explicit approval. It may not directly call FluentCRM write
-endpoints. All writes pass through the CLI policy boundary.
+endpoints within the supported workflow. All supported writes pass through the
+reviewed CLI policy path.
 
 Version one explicitly trusts the project-local Codex skill as the human
 confirmation boundary. The CLI does not cryptographically prove that a human
@@ -222,6 +223,18 @@ approved execution. Any process that can read the private state database and
 invoke the CLI could execute a live preview, so the database and its parent
 directory must be owned by the operator, inaccessible to other users, and never
 exposed to untrusted processes.
+
+The CLI is a deterministic policy implementation, not an OS-enforced security
+boundary. Version one trusts the same local OS user, project-local agent, source
+checkout, and Infisical identity. A deliberate same-user caller could modify the
+source or allowlist, alter SQLite, invoke the credential launcher for another
+command, or call FluentCRM directly. Preventing that behavior requires a separate
+service identity or WordPress-side enforcement and is outside version one.
+
+Raw FluentCRM credentials should not be inherited by the parent agent process.
+The supported invocation uses a tool-specific Infisical launcher that injects
+secrets only into the CLI child process and never prints them. This reduces
+accidental exposure but does not change the trusted same-user threat model.
 
 ### Implementation Structure
 
@@ -876,7 +889,7 @@ Version one is complete when:
   end-to-end operator acceptance succeed using the designated test pair; neither
   is executable through pytest or unattended CI.
 - No tag creation, removal, bulk mutation, or unattended confirmation path is
-  exposed.
+  exposed by the supported project-local workflow.
 
 ## Distribution Plan
 
@@ -884,7 +897,9 @@ Version one is complete when:
 - Agent layer: project-local Codex skill invoking the CLI's structured JSON
   interface.
 - Credentials: dedicated FluentCRM manager credentials loaded from Infisical into
-  process environment variables, including a separate audit HMAC key.
+  the CLI child-process environment through a tool-specific launcher, including a
+  separate audit HMAC key; the parent agent environment should not contain raw
+  values.
 - Configuration: reviewed allowlist committed without secrets.
 - State and audit: one private authoritative SQLite database outside the Git
   repository; optional JSONL is a derived read-only export.
