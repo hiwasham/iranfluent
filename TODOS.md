@@ -14,4 +14,16 @@
 **Priority:** P3
 **Depends on:** Completed version one and observed operational usage
 
+### Add individually reviewed FluentCRM tags
+
+**What:** Add support for approved FluentCRM tags beyond `vocab_b1`.
+
+**Why:** Future operator requests may need other vocabulary levels or course-access tags while retaining deterministic tag selection.
+
+**Context:** Add tags individually after version one demonstrates demand. Each tag requires exact live identity verification, a documented review of downstream access, email, and automation effects, a maximum 30-day approval window, contract fixtures, and full tests. Do not introduce arbitrary IDs, fuzzy tag selection, or runtime allowlist overrides.
+
+**Effort:** M per tag
+**Priority:** P3
+**Depends on:** Completed version one, demonstrated demand, and separate business-safety approval for each tag
+
 ## Completed
