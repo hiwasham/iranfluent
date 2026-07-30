@@ -273,7 +273,9 @@ The Python package uses six responsibility-bearing modules under
 - `models.py`: contains typed immutable command, response, entity, outcome, and
   error-category values plus their JSON serialization rules.
 - `config.py`: strictly loads and validates required environment variables and
-  the committed tag allowlist without logging secret values.
+  the committed tag allowlist without logging secret values. It also establishes
+  runtime artifact identity from the package version, Git commit, committed
+  `uv.lock`, and allowlist bytes before any API access.
 
 `__init__.py` contains no behavior. `pyproject.toml`, the reviewed allowlist data,
 tests, and the project-local Codex skill are supporting artifacts rather than
@@ -690,10 +692,15 @@ ID produces `preview_rejected` with a null request ID.
 Audit is fail-closed before mutation. Startup preflight requires the audit HMAC
 key, private writable state directory, successful database integrity and
 permission checks, and a successful `BEGIN IMMEDIATE`/`ROLLBACK` write-lock
-probe. Preview, cancel, and reconcile fail if their state change and audit row
-cannot commit together. Execute never mutates unless its claimed preview,
-`claimed` journal, and `execution_claimed` audit row commit in one transaction,
-followed by a committed transition to `dispatching` with its
+probe. Before any FluentCRM API access, it also requires a clean Git worktree,
+the current full commit hash, the installed package version, a committed
+`uv.lock`, and SHA-256 digests of `uv.lock` and the exact allowlist file bytes.
+Missing identity data, a dirty or untracked worktree, an uncommitted lockfile, or
+an unreadable identity input fails closed. There is no environment variable or
+command-line bypass. Preview, cancel, and reconcile fail if their state change
+and audit row cannot commit together. Execute never mutates unless its claimed
+preview, `claimed` journal, and `execution_claimed` audit row commit in one
+transaction, followed by a committed transition to `dispatching` with its
 `execution_dispatching` audit row.
 
 After mutation, the terminal journal update and terminal audit row commit in one
@@ -709,6 +716,10 @@ Fields required for every event are:
 - event type;
 - request ID;
 - actor/tool identity;
+- tool package version;
+- full Git commit hash;
+- `uv.lock` SHA-256 digest;
+- allowlist SHA-256 digest;
 - operation;
 
 `request_id` and `operation` may be null for malformed input or an unknown request
@@ -882,7 +893,11 @@ replace the mapped integration, concurrency, subprocess, agent, and controlled
 acceptance scenarios.
 
 The default suite must have no external network dependency and must never read
-production credentials.
+production credentials. Unit and integration tests inject immutable runtime
+identity values. Subprocess tests that exercise the production identity preflight
+run inside temporary Git repositories and cover clean, dirty, untracked,
+uncommitted-lockfile, missing-lockfile, and digest-mismatch cases; no test-only
+runtime bypass is exposed by the installed CLI.
 
 ### Live Contract and Acceptance Safety
 
@@ -898,7 +913,9 @@ stages:
    provides no confirmation flag, environment bypass, stdin pipe, or unattended
    mode. After the write it performs a fresh read, proves the selected tag is
    present and all unrelated pre-write tags remain, and writes only the redacted
-   contract fixture.
+   contract fixture. It requires the same clean runtime identity preflight and
+   records the package version, full commit hash, lockfile digest, and allowlist
+   digest in that fixture.
 2. After implementation, the final acceptance check runs through the actual
    project-local skill and guarded CLI using their normal preview and
    confirmation flow against the separate reserved acceptance contact.
@@ -927,6 +944,10 @@ Version one is complete when:
   attached.
 - Credentials and authorization data are absent from the repository, command
   output, test fixtures, and audit logs.
+- Every API-backed command fails before network access unless it runs from a
+  clean committed checkout with a committed `uv.lock`; every resulting audit row
+  identifies the package version, full commit hash, lockfile digest, and
+  allowlist digest.
 - Unit tests cover matching, allowlist validation, stale previews, audit
   redaction, already-attached behavior, schema initialization and validation, and
   error normalization. Allowlist tests cover its strict schema and duplicate
@@ -983,8 +1004,10 @@ Version one is complete when:
 - Configuration: reviewed allowlist committed without secrets.
 - State and audit: one private authoritative SQLite database outside the Git
   repository; optional JSONL is a derived read-only export.
-- Version one is run from the repository with `uv run`; packaging and user-level
-  installation are deferred.
+- Version one is run from a clean committed repository checkout with
+  `uv run --locked`; `uv.lock` is committed, and the runtime records the package
+  version, full commit hash, lockfile digest, and allowlist digest. Packaging and
+  user-level installation are deferred.
 - Installation, contract-check, and validation commands will be defined by
   `/plan-eng-review`.
 - No public package registry, app store, or production web deployment is needed
