@@ -1134,6 +1134,266 @@ the command response schemas, fail-closed audit behavior, transactional
 single-use enforcement, execution-journal recovery, and 90-day state retention
 before implementation.
 
+## What Already Exists
+
+- FluentCRM's official REST API already provides contact lookup, tag lookup, and
+  contact segment synchronization. The operator reuses those endpoints instead
+  of automating the WordPress browser interface.
+- The live IranFluent installation has already demonstrated the
+  `subscribers/sync-segments` write followed by a fresh subscriber read. The
+  controlled contract probe must reproduce and document that behavior with the
+  dedicated manager before production code relies on it.
+- The production tag already exists as ID `269`, title `set_vocab_B1`, and slug
+  `set_vocab_b1`. Version one validates that identity and never creates a tag.
+- Infisical already provides the secret-management boundary. The plan adds a
+  tool-specific credential prefix and launcher rather than introducing another
+  secret store.
+- Git, `uv`, gstack decision logs, and the approved design document already
+  provide source, dependency, and review history. Runtime identity reuses Git and
+  `uv.lock` rather than inventing a release registry.
+- The existing manual WordPress workflow remains an emergency fallback. It is
+  not reused as an automated execution path because browser sessions are less
+  stable and harder to verify deterministically.
+- The repository contains no existing application package or test suite for this
+  operator. The implementation therefore creates the approved six-module Python
+  package without adapting or duplicating another local abstraction.
+
+## NOT in Scope
+
+- Tag creation or removal: downstream effects are not reversible, and version
+  one is intentionally add-only.
+- Multiple tags, arbitrary tag IDs, or runtime allowlist overrides: each
+  additional tag requires a separate business-safety review and design update.
+- Bulk contacts or bulk mutations: one-email/one-tag keeps identity,
+  confirmation, and recovery unambiguous.
+- Fuzzy contact matching or selection by name, phone, or ranking: only one exact
+  normalized email match is accepted.
+- Non-subscribed contacts: broader status policy requires separate product and
+  safety review.
+- Campaign, automation, list, or course-management operations: these expand the
+  permission and failure surface beyond the observed workflow.
+- Cryptographic human-approval proof or OS-enforced same-user isolation: version
+  one trusts the project-local skill, checkout owner, and credential holder.
+- A WordPress staff UI, multi-user identity, or centralized service: the first
+  release serves one operator through the project-local agent.
+- Public packaging, a user-level installer, package registry publication, or
+  automatic updates: version one runs from a clean committed checkout with
+  `uv run --locked`.
+- Centralized audit ingestion or tamper-evident history: SQLite is the local
+  authoritative append-only application store; optional JSONL is derived output.
+- Automatic contract or business-approval renewal: both require a deliberate
+  human review and committed fixture or allowlist update.
+- Automated live mutations in pytest or CI: live writes remain two manually
+  confirmed acceptance stages using separate reserved contacts.
+- Automatic rollback or tag-removal cleanup: downstream email, access, or
+  automation effects may already have occurred.
+
+## Test Coverage Map
+
+No implementation tests exist yet because the repository is greenfield. The
+implementation must map every path below to at least one behavior test and close
+with 100% statement and branch coverage.
+
+```text
+CODE PATHS                                              OPERATOR JOURNEYS
+
+[P01-P12] Startup, configuration, and state             [J01] Preview -> confirm -> execute -> verified success
+  +-- clean identified checkout                         [J02] Preview -> already attached -> terminal no-op
+  +-- missing or invalid environment                    [J03] Preview -> explicit decline -> cancel
+  +-- invalid or stale allowlist approval                [J04] Wrong ID / ambiguous reply / silence -> no execute
+  +-- dirty or untracked worktree                       [J05] Preview expires or remote state changes -> reject
+  +-- missing, changed, or uncommitted uv.lock           [J06] Two executes race -> exactly one claim
+  +-- package or digest identity failure                [J07] Crash in claimed -> fresh validation -> safe resume
+  +-- audit key, directory, database, or schema failure  [J08] Crash in dispatching -> reconcile, never re-send
+  +-- SQLite lock timeout                               [J09] Ambiguous response -> recovered or unknown
+                                                        [J10] Startup failure -> clear error and zero HTTP
+[P13-P24] Strict command framing
+  +-- four accepted command schemas
+  +-- empty, oversized, invalid UTF-8, or BOM input
+  +-- duplicate keys, trailing data, or non-object JSON
+  +-- missing, unknown, or wrongly typed fields
+  +-- invalid email, operation, tag key, or UUIDv4
+
+[P25-P36] Contract, lookup, and preview policy
+  +-- stale or mismatched contract
+  +-- authentication and authorization rejection
+  +-- transient read retry success or exhaustion
+  +-- 20-second deadline exhaustion
+  +-- invalid pagination or fixture/absolute page limit
+  +-- zero, one, or multiple exact contacts
+  +-- rejected contact status
+  +-- missing or changed approved tag
+  +-- already-attached terminal no-op
+
+[P37-P41] Preview persistence
+  +-- preview and audit commit
+  +-- audit transaction rollback
+  +-- request-ID uniqueness collision
+  +-- active preview cancellation
+  +-- missing, expired, or terminal cancellation
+
+[P42-P51] Execute before dispatch
+  +-- missing, expired, consumed, or stale preview
+  +-- fresh contact, tag, contract, and approval checks
+  +-- single-winner concurrent claim
+  +-- valid claimed-journal resume
+  +-- stale claimed-journal rejection
+
+[P52-P63] Dispatch and verification matrix
+  +-- dispatch transaction failure sends no write
+  +-- valid 2xx with preserved tags succeeds
+  +-- target absent or prior tag missing fails verification
+  +-- contract-defined rejection with unchanged state
+  +-- nominal rejection with changed state uses observation
+  +-- unchanged 401/403 identity rejection
+  +-- ambiguous response recovers when state proves success
+  +-- absent, unreadable, or deadline-expired state is unknown
+  +-- terminal audit failure leaves dispatching evidence
+
+[P64-P71] Reconciliation and maintenance
+  +-- dispatching current state present, absent, or unreadable
+  +-- claimed reconciliation leaves the journal resumable
+  +-- repeated reconciliation preserves original attribution
+  +-- active preview transitions to expired with audit
+  +-- at most 100 terminal rows deleted oldest-first
+  +-- cleanup failure warns while command transaction remains independent
+
+PLANNED COVERAGE: 71/71 code paths, 10/10 operator journeys
+IMPLEMENTED COVERAGE: 0/71 until implementation begins
+QUALITY TARGET: behavior + edge + error tests for every path
+```
+
+The critical end-to-end paths are J01, J06, J07, J08, J09, and J10. They require
+integration or subprocess coverage because mocks would hide HTTP, SQLite,
+process-interruption, or concurrency failures. J04 is an agent transcript
+contract test using a fake CLI. No LLM quality eval is required because the skill
+uses exact confirmation rules rather than generated semantic output.
+
+## Failure Mode Registry
+
+| Paths | Production failure | Test coverage | Error handling | Operator result |
+|---|---|---|---|---|
+| P01-P05 | Missing secret, invalid allowlist, stale business approval, or dirty checkout | Unit + subprocess | Fail before HTTP | Clear local/policy error |
+| P06-P12 | Lockfile identity, audit storage, schema, permissions, or lock probe fails | Integration + subprocess | Fail closed before HTTP | Clear startup error; explicitly unauditable |
+| P13-P24 | Agent sends malformed, ambiguous, oversized, or wrongly typed JSON | Unit + subprocess | Strict rejection without state change | Safe JSON error |
+| P25 | Contract fixture expired or site/version/schema changed | Contract + integration | `contract_stale` before mutation | Refresh contract instruction |
+| P26-P27 | Dedicated manager credentials are invalid or under-permissioned | HTTP integration | No retry for 401/403 | Clear identity error |
+| P28-P29 | Transient reads fail repeatedly or consume the phase deadline | HTTP integration + fake clock | One bounded retry, then fail | Clear transport/deadline error |
+| P30-P31 | Pagination loops, contradicts metadata, or exceeds reviewed limits | HTTP integration | Reject response and stop | Clear protocol error |
+| P32-P33 | Search returns zero or multiple exact contacts | Unit + integration | No selection and no write | Clear not-found/ambiguous error |
+| P34-P35 | Contact status or live tag identity no longer matches policy | Unit + integration | Reject before preview/write | Clear policy error |
+| P36 | Target tag is already present | Integration | Verified terminal no-op | Success with no confirmation |
+| P37-P39 | Preview transaction, audit insert, or UUID uniqueness fails | SQLite integration | Atomic rollback | Clear local-state error |
+| P40-P41 | Cancellation races with execute or targets expired/terminal state | Concurrency + integration | Conditional single-row transition | Clear consumed/expired result |
+| P42-P48 | Execute sees stale preview, contract, tag, contact, or approval | Unit + integration | Reject before claim/dispatch | New preview required |
+| P49 | Concurrent executes attempt the same active preview | Concurrency + subprocess | Exactly one transaction claims | One proceeds; others reject |
+| P50-P51 | Process crashed in `claimed`, then state changed before resume | Process interruption + integration | Fresh full-state validation | Resume safely or reject |
+| P52 | SQLite cannot commit `dispatching` | SQLite integration | No mutation client invocation | Clear local-state error |
+| P53 | Mutation succeeds and all prior tags remain | HTTP + SQLite integration | Fresh verification and terminal commit | Verified success |
+| P54-P55 | Target missing or a pre-write tag disappears | HTTP integration | Verification failure, no repair | Critical visible failure |
+| P56-P58 | API rejects after invocation or identity changes during dispatch | Parameterized matrix integration | Fresh state determines result | Rejection, observed success, or failure |
+| P59-P62 | Timeout, disconnect, malformed response, unreadable state, or deadline | Fake HTTP + fake clock | Never retry write; bounded verification | Recovered or explicit unknown |
+| P63 | Terminal state/audit commit fails after possible mutation | SQLite fault injection | Preserve `dispatching` journal | `audit_incomplete`; reconcile required |
+| P64-P67 | Reconcile cannot attribute who attached or removed the tag | Integration | Read-only current-state report | Present, absent, or unknown |
+| P68 | Reconciliation is repeated after original outcome is unknown | Integration | Preserve immutable attribution | Current state without false certainty |
+| P69-P71 | Expiry/deletion batch crashes, locks, or exceeds 100 rows | SQLite integration | Atomic bounded maintenance; warning only | Requested command still has own gate |
+| J04 | Agent receives silence, wrong ID, or vague confirmation | Transcript fixtures | Never invoke `execute` | No mutation |
+| Live probe | Contract mutation replaces unrelated tags or triggers unexpected effects | Manual guarded probe | Stop implementation; no cleanup write | Design revision required |
+
+Critical gaps: **0**. Every listed failure has planned test coverage, explicit
+handling, and a visible operator result. Unknown mutation outcomes are visible
+and direct the operator to reconciliation; they are not silent failures.
+
+## Inline Diagram Requirements
+
+- `src/iranfluent_tag_operator/state.py` must contain the preview and execution
+  state-transition diagrams beside the transition tables or SQL constraints.
+- `src/iranfluent_tag_operator/application.py` must contain the
+  claim-to-dispatch-to-verification pipeline beside the execute orchestration.
+- `src/iranfluent_tag_operator/fluentcrm.py` should contain a short retry and
+  phase-deadline diagram only if the implementation cannot remain obvious from
+  named helper functions and tests.
+- Tests must update these diagrams whenever they add or change a valid
+  transition. A stale state diagram blocks review.
+
+## Worktree Strategy
+
+Sequential implementation, no parallelization opportunity. The six modules are
+small but tightly coupled through the command models, contract fixture, state
+transitions, error taxonomy, and test fixtures. Parallel worktrees would create
+more merge and behavioral-integration risk than schedule benefit.
+
+Recommended order:
+
+```text
+models/config
+      |
+      v
+state + contract fixture/probe
+      |
+      v
+FluentCRM client
+      |
+      v
+application orchestration
+      |
+      v
+CLI + project-local skill
+      |
+      v
+full suite + live acceptance
+```
+
+## Implementation Tasks
+
+Synthesized from this review's findings. Each task derives from a specific
+accepted decision above.
+
+- [ ] **T1 (P1, human: ~1 day / CC: ~1 hour)** - Foundation - Create the locked package, typed contracts, strict allowlist, and runtime identity preflight.
+  - Surfaced by: Architecture and code-quality review - six-module boundary, closed errors, strict configuration, and reproducible artifact identity.
+  - Files: `pyproject.toml`, `uv.lock`, `config/tags.json`, `src/iranfluent_tag_operator/models.py`, `src/iranfluent_tag_operator/config.py`, unit tests.
+  - Verify: `uv run pytest tests/unit -q`.
+- [ ] **T2 (P1, human: ~2 days / CC: ~2 hours)** - State - Implement schema v1, atomic preview transitions, execution journals, append-only audit, and bounded retention.
+  - Surfaced by: Architecture review - authoritative SQLite state, crash phases, audit boundaries, and retention state machines.
+  - Files: `src/iranfluent_tag_operator/state.py`, `tests/integration/test_state.py`, concurrency and subprocess fixtures.
+  - Verify: state, fault-injection, interruption, and concurrent-claim tests pass.
+- [ ] **T3 (P1, human: ~1 day / CC: ~1 hour)** - Contract - Build the guarded FluentCRM contract probe and committed redacted fixture.
+  - Surfaced by: Architecture review - undocumented mutation semantics and stale-contract protection.
+  - Files: `scripts/fluentcrm_contract_probe.py`, `config/fluentcrm-contract.json`, `tests/contract/`.
+  - Verify: all read-only contract tests pass; manual mutation remains TTY-only and unavailable to pytest.
+- [ ] **T4 (P1, human: ~1.5 days / CC: ~2 hours)** - HTTP - Implement exact lookup, streaming pagination, deadlines, retries, parsing, and redaction.
+  - Surfaced by: Performance and outside-voice review - bounded memory, contract-derived pagination, and total operation deadlines.
+  - Files: `src/iranfluent_tag_operator/fluentcrm.py`, HTTP integration fixtures and tests.
+  - Verify: wire-level tests prove methods, paths, bodies, retry counts, page bounds, and timeout clipping.
+- [ ] **T5 (P1, human: ~1.5 days / CC: ~2 hours)** - Application - Implement preview, cancel, and read-only reconciliation orchestration.
+  - Surfaced by: Architecture review - deterministic policy sequencing and fresh-state requirements.
+  - Files: `src/iranfluent_tag_operator/application.py`, unit and integration tests.
+  - Verify: preview/no-op/cancel/reconcile journeys and every rejection path pass.
+- [ ] **T6 (P1, human: ~2 days / CC: ~3 hours)** - Mutation - Implement claim, dispatch, one-shot mutation, verification matrix, recovery, and unknown outcomes.
+  - Surfaced by: Outside voice and test review - crash-before-send ambiguity, dispatch-aware outcomes, and preservation of all pre-write tags.
+  - Files: `application.py`, `state.py`, `fluentcrm.py`, parameterized integration and interruption tests.
+  - Verify: every mutation matrix row passes and the fake server observes at most one POST.
+- [ ] **T7 (P1, human: ~1 day / CC: ~1 hour)** - CLI - Implement strict one-command stdin/stdout framing and centralized exit mapping.
+  - Surfaced by: Code-quality review - exact schemas, bounded parsing, safe messages, and no secret leakage.
+  - Files: `src/iranfluent_tag_operator/cli.py`, `__init__.py`, subprocess tests.
+  - Verify: stdout is exactly one JSON object for every path; stderr and audit contain no representative secrets.
+- [ ] **T8 (P1, human: ~1 day / CC: ~1 hour)** - Agent - Add the project-local skill and transcript contract tests.
+  - Surfaced by: Test review - trusted confirmation boundary must reject silence, ambiguity, wrong IDs, and mismatched previews.
+  - Files: `.agents/skills/fluentcrm-tag/SKILL.md`, `tests/agent/`, fake CLI fixture.
+  - Verify: transcript suite proves rejected conversations invoke no `execute`.
+- [ ] **T9 (P1, human: ~1 day / CC: ~1 hour)** - Operations - Add the Infisical launcher and operator documentation without storing credentials.
+  - Surfaced by: Security and distribution review - child-process-only secrets and clean-checkout execution.
+  - Files: tool-specific launcher under `scripts/`, operator runbook, configuration documentation.
+  - Verify: launcher environment is observed only in the child process; logs and repository scans contain no secrets.
+- [ ] **T10 (P1, human: ~1.5 days / CC: ~2 hours)** - Verification - Close the 71-path suite at 100% statement and branch coverage.
+  - Surfaced by: Test review - all code paths, operator journeys, failure modes, and boundary timings require tests.
+  - Files: `tests/unit/`, `tests/integration/`, `tests/subprocess/`, `tests/contract/`, `tests/agent/`.
+  - Verify: `uv run pytest --cov=iranfluent_tag_operator --cov-branch --cov-report=term-missing --cov-fail-under=100`.
+- [ ] **T11 (P1, external prerequisites + human: ~2 hours / CC: ~30 minutes)** - Acceptance - Run the two separately confirmed live stages and record evidence.
+  - Surfaced by: Architecture and test review - mocks cannot prove the production API is additive or the full skill workflow works.
+  - Files: redacted contract fixture, acceptance record, business-review fields.
+  - Verify: contract-probe and final-acceptance contacts each receive exactly one mutation, preserve all prior tags, and are never cleaned up by removal.
+
 ## What I noticed about how you think
 
 - You started with a concrete production request, not a platform pitch:
