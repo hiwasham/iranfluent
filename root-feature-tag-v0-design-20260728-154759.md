@@ -533,9 +533,9 @@ category-to-exit-code mapping:
   `remote_transport_failed`, `remote_rate_limited`, `remote_server_error`, and
   `remote_response_invalid`.
 - Exit `5`, local durability or mutation-outcome failure:
-  `local_state_busy`, `local_state_invalid`, `audit_incomplete`,
-  `execution_outcome_unknown`, `execution_verification_failed`, and
-  `internal_error`.
+  `runtime_identity_invalid`, `audit_unavailable`, `local_state_busy`,
+  `local_state_invalid`, `audit_incomplete`, `execution_outcome_unknown`,
+  `execution_verification_failed`, and `internal_error`.
 
 Every failure is represented internally as an immutable `CommandError` containing
 the enum category, a predefined safe message, nullable request ID, nullable HTTP
@@ -685,19 +685,29 @@ Preview and execution create separate events linked by request ID:
 `reconciliation_present`, `reconciliation_absent`, or
 `reconciliation_unknown`.
 
-Every accepted or rejected preview request and every execute, cancel, and
-reconcile request produces an event. Malformed JSON that cannot yield a request
-ID produces `preview_rejected` with a null request ID.
+The CLI establishes runtime identity, loads the audit HMAC key, opens and
+validates SQLite, and proves it can write before parsing or dispatching a command.
+After that audit initialization succeeds, every accepted or rejected preview,
+execute, cancel, and reconcile attempt produces an event. Malformed JSON that
+cannot yield a request ID produces `preview_rejected` with a null request ID.
 
-Audit is fail-closed before mutation. Startup preflight requires the audit HMAC
-key, private writable state directory, successful database integrity and
-permission checks, and a successful `BEGIN IMMEDIATE`/`ROLLBACK` write-lock
-probe. Before any FluentCRM API access, it also requires a clean Git worktree,
-the current full commit hash, the installed package version, a committed
-`uv.lock`, and SHA-256 digests of `uv.lock` and the exact allowlist file bytes.
-Missing identity data, a dirty or untracked worktree, an uncommitted lockfile, or
-an unreadable identity input fails closed. There is no environment variable or
-command-line bypass. Preview, cancel, and reconcile fail if their state change
+Audit is fail-closed before any FluentCRM API access. Startup preflight requires
+the audit HMAC key, private writable state directory, successful database
+integrity and permission checks, and a successful
+`BEGIN IMMEDIATE`/`ROLLBACK` write-lock probe. It also requires a clean Git
+worktree, the current full commit hash, the installed package version, a
+committed `uv.lock`, and SHA-256 digests of `uv.lock` and the exact allowlist
+file bytes. Missing identity data, a dirty or untracked worktree, an uncommitted
+lockfile, an unavailable audit key or database, or an unreadable identity input
+fails closed. There is no environment variable or command-line bypass.
+
+Failures that prevent this initialization are explicitly unauditable startup
+failures: they return a closed, sanitized local error on stdout/stderr, append no
+audit row because the required authoritative store or event identity is not
+available, and perform no FluentCRM request. The design does not claim
+request-level audit coverage before audit initialization.
+
+After initialization, preview, cancel, and reconcile fail if their state change
 and audit row cannot commit together. Execute never mutates unless its claimed
 preview, `claimed` journal, and `execution_claimed` audit row commit in one
 transaction, followed by a committed transition to `dispatching` with its
@@ -897,7 +907,11 @@ production credentials. Unit and integration tests inject immutable runtime
 identity values. Subprocess tests that exercise the production identity preflight
 run inside temporary Git repositories and cover clean, dirty, untracked,
 uncommitted-lockfile, missing-lockfile, and digest-mismatch cases; no test-only
-runtime bypass is exposed by the installed CLI.
+runtime bypass is exposed by the installed CLI. Startup-failure tests also prove
+that missing audit keys, unwritable state, failed integrity checks, and failed
+lock probes produce no audit row and no HTTP request. Tests separately prove that
+every command input received after successful audit initialization, including
+malformed JSON, produces its required event.
 
 ### Live Contract and Acceptance Safety
 
@@ -937,9 +951,11 @@ Version one is complete when:
 - Zero writes occur for partial, missing, duplicate, non-allowlisted, or stale
   inputs.
 - Repeating an already-completed request returns a verified no-op.
-- Every preview, execute, cancel, and reconcile request has the required
+- Every command attempt after successful audit initialization has the required
   append-only audit row, or a durable `dispatching` execution journal when the
-  terminal transaction fails after mutation.
+  terminal transaction fails after mutation. Failures that prevent audit
+  initialization are explicitly reported as unauditable startup failures and
+  make no FluentCRM request.
 - Every reported success has a fresh post-write API read showing the exact tag ID
   attached.
 - Credentials and authorization data are absent from the repository, command
