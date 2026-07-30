@@ -206,7 +206,11 @@ structured preview request. The CLI owns matching, mutation policy,
 preview-state validation, mutation, verification, and audit rules. The skill owns
 the human conversation and explicit-confirmation gate.
 
-Effort: M, human team 3-5 days / Codex+gstack 2-3 hours.
+Effort: M/L, human team 8-12 engineer-days / Codex+gstack 1-2 focused
+implementation days. This includes production code, fixtures, automated tests,
+documentation, and local verification. It excludes provisioning credentials,
+reviewing downstream tag effects, preparing the two live test contacts, and
+waiting for external access or approvals.
 
 Pros:
 
