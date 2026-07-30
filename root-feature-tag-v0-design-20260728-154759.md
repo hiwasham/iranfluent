@@ -504,9 +504,10 @@ If the user declines, the skill sends:
 }
 ```
 
-Cancel consumes unexpired preview state and appends `execution_cancelled`.
-Abandoned previews are deleted on a later invocation after expiry and represented
-by `preview_expired`; they do not imply an explicit cancellation.
+Cancel changes an unexpired `active` preview to the terminal `cancelled` state
+and appends `execution_cancelled`. A later invocation changes an abandoned
+expired `active` preview to terminal `expired` and appends `preview_expired`;
+expiry does not imply an explicit cancellation.
 
 All error responses use:
 
@@ -647,6 +648,46 @@ FluentCRM API request. It uses `PRAGMA user_version` as the schema version:
 Tests must cover first initialization, reopening a valid database, concurrent
 first initialization, unsupported older and newer versions, missing schema
 objects, failed integrity checks, and a simulated interrupted initialization.
+
+Preview rows use this closed state machine:
+
+```text
+                         execute claim
+                    +--------------------> executed
+                    |
+active -------------+------ cancel ------> cancelled
+                    |
+                    +------ expiry ------> expired
+```
+
+`active` is the only consumable preview state. `executed`, `cancelled`, and
+`expired` are terminal tombstones with a required terminal timestamp. The
+`active` to `executed` transition and creation of the linked `claimed` execution
+journal occur in one transaction. No terminal preview state may transition
+again.
+
+Execution journals use this closed state machine:
+
+```text
+claimed ---- fresh-state validation ----> dispatching
+   |                                         |
+   +---- validation rejection ------------> rejected
+                                             |
+                                             +--> succeeded
+                                             +--> recovered
+                                             +--> rejected
+                                             +--> verification_failed
+                                             +--> outcome_unknown
+```
+
+`claimed` and `dispatching` are nonterminal. `succeeded`, `recovered`,
+`rejected`, `verification_failed`, and `outcome_unknown` are terminal and require
+a terminal timestamp. A repeated execute may resume only `claimed`.
+Reconciliation of a stranded `dispatching` journal never writes remotely; in one
+transaction it changes the journal to terminal `outcome_unknown` and appends the
+current-state reconciliation event. The event records whether the target is
+currently present, absent, or unreadable without attributing the original
+mutation to this tool.
 
 Version-one indexes include preview state plus expiry, execution-journal state
 plus terminal timestamp, and audit request ID plus monotonic sequence. Primary
@@ -825,16 +866,18 @@ durable execution journal, reports current tag presence, and appends a
 reconciliation event but never repeats the write. It handles `dispatching`
 records with no terminal event after a process crash. A `claimed` record is known
 not to have invoked the mutation client and may instead be resumed by execute
-after full fresh-state validation. A later observed tag for a `dispatching`
-record does not prove which actor attached it, so the original unknown outcome
-remains immutable.
+after full fresh-state validation. Reconciliation closes a `dispatching` record
+as `outcome_unknown`; a later observed tag does not prove which actor attached
+it, so that original outcome remains unknown.
 
-SQLite execution journals and expired preview tombstones are retained for 90
-days. After schema validation, each invocation may process at most 100 eligible
-preview or journal rows, oldest first, in one short maintenance transaction.
-Expiring an abandoned preview inserts its `preview_expired` audit row in the same
-transaction that removes its consumable state. Terminal journals older than 90
-days may be deleted; audit rows are never deleted by the tool.
+Terminal preview tombstones and terminal execution journals are retained for 90
+days from their terminal timestamp. `active` previews are never deleted directly:
+once expired, cleanup first changes them to terminal `expired` and inserts
+`preview_expired` in the same transaction. `claimed` and `dispatching` journals
+are never deleted by automatic maintenance. After schema validation, each
+invocation may transition or delete at most 100 eligible preview or journal rows,
+oldest first, in one short maintenance transaction. Terminal preview and journal
+rows older than 90 days may be deleted; audit rows are never deleted by the tool.
 
 Maintenance is best-effort and separate from the requested command transaction.
 Lock contention or cleanup failure emits a sanitized stderr warning but does not
@@ -997,12 +1040,15 @@ Version one is complete when:
   skill boundary and its non-cryptographic limitation.
 - Tests cover terminal preview-time no-op, explicit cancellation, preview expiry,
   safe resume of `claimed` records, refusal to repeat writes for `dispatching`
-  records, and reconciliation of `dispatching` records with no terminal event.
+  records, reconciliation of `dispatching` records to terminal
+  `outcome_unknown`, every permitted state transition, and rejection of every
+  invalid transition.
 - Concurrency tests prove preview-state single use, durable SQLite state
   transitions, serialized audit inserts, and bounded lock-timeout behavior.
 - Maintenance tests seed more than 100 expired rows and prove each invocation
   processes at most 100 using the expected indexes, preserves every audit row,
-  and never runs `VACUUM`.
+  never deletes `active`, `claimed`, or `dispatching` rows, and never runs
+  `VACUUM`.
 - The production Python package maintains 100% statement and branch coverage
   without unexplained coverage exclusions.
 - One manually confirmed contract-probe mutation and one manually confirmed
