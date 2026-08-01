@@ -40,3 +40,5 @@ yarn-error.log*
 # Cache
 .cache/
 .parcel-cache/
+
+.claude/worktrees/
