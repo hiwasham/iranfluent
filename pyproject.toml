@@ -1,0 +1,37 @@
+[project]
+name = "iranfluent-tag-operator"
+version = "0.1.0"
+description = "Guarded FluentCRM tag operator: preview, confirm, add one pre-approved tag to one contact, verify, audit."
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+iranfluent-tag-operator = "iranfluent_tag_operator.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/iranfluent_tag_operator"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=5.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "live: touches the real FluentCRM API; never runs in the default suite or CI.",
+]
+addopts = "-m 'not live'"
+
+[tool.coverage.run]
+branch = true
+source = ["iranfluent_tag_operator"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 100

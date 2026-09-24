@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "tags": [
+    {
+      "key": "vocab_b1",
+      "id": 269,
+      "title": "set_vocab_B1",
+      "slug": "set_vocab_b1",
+      "purpose": "Enable B1 vocabulary",
+      "risk_note": "May unlock access or trigger FluentCRM automations.",
+      "business_reviewed_at": "2026-07-30T00:00:00Z",
+      "business_review_expires_at": "2026-08-29T00:00:00Z",
+      "business_reviewer": "operator",
+      "known_downstream_effects": [
+        "May unlock B1 vocabulary access.",
+        "May trigger FluentCRM automations."
+      ],
+      "enabled": true
+    }
+  ]
+}

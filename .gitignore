@@ -40,3 +40,14 @@ yarn-error.log*
 # Cache
 .cache/
 .parcel-cache/
+.gstack/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+.venv/
