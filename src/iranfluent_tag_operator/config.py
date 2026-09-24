@@ -20,6 +20,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import MappingProxyType
 
 from .models import CommandError, ErrorCategory, TagDefinition
 
@@ -56,10 +57,12 @@ def _is_str(value: object) -> bool:
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    # Raise plain ValueError so each loader's json.loads guard maps duplicate
+    # keys to its own category (allowlist -> exit 5, contract -> exit 2).
     seen: set[str] = set()
     for key, _ in pairs:
         if key in seen:
-            raise _invalid()
+            raise ValueError(f"duplicate key {key!r}")
         seen.add(key)
     return dict(pairs)
 
@@ -233,4 +236,231 @@ def build_runtime_identity(
 
 def _is_full_commit(value: str) -> bool:
     return len(value) in (40, 64) and all(char in "0123456789abcdef" for char in value)
+
+
+# --- FluentCRM contract fixture (T3) ---------------------------------------
+#
+# The committed fixture is a machine-generated artifact of the manually
+# confirmed live contract probe, never hand-edited. Any structural, schema,
+# freshness, or compatibility problem fails closed as ``contract_stale``
+# (exit 2): the single operator remedy for all of them is to rerun the probe.
+
+CONTRACT_SCHEMA_VERSION = 1
+MAX_CONTRACT_WINDOW = timedelta(days=30)
+MAX_PAGE_LIMIT = 100
+CONTRACT_PATH = Path(__file__).resolve().parents[2] / "config" / "fluentcrm-contract.json"
+
+_PAGINATION_MODES = frozenset({"page_number", "cursor"})
+_CONTRACT_KEYS = frozenset({
+    "schema_version", "generated_at", "expires_at", "site", "rest_namespace",
+    "plugin_version", "endpoints", "pagination_mode", "contact_search_page_limit",
+    "tag_lookup_page_limit", "response_keys", "mutation", "success_markers",
+    "runtime_identity",
+})
+_ENDPOINT_KEYS = frozenset({"contact_search", "tag_lookup", "contact_detail", "attach_tags"})
+_RESPONSE_KEY_ENDPOINTS = frozenset({"contact_search", "tag_lookup"})
+_MUTATION_KEYS = frozenset({"method", "path", "body_keys"})
+_SUCCESS_KEYS = frozenset({"status", "body_keys"})
+_RUNTIME_IDENTITY_KEYS = frozenset({
+    "package_version", "git_commit", "uv_lock_sha256", "allowlist_sha256",
+})
+
+
+@dataclass(frozen=True)
+class ContractFixture:
+    """One reviewed, immutable FluentCRM compatibility fixture."""
+
+    schema_version: int
+    generated_at: str
+    expires_at: str
+    site: str
+    rest_namespace: str
+    plugin_version: str | None
+    endpoints: Mapping[str, str]
+    pagination_mode: str
+    contact_search_page_limit: int
+    tag_lookup_page_limit: int
+    response_keys: Mapping[str, tuple[str, ...]]
+    mutation_method: str
+    mutation_path: str
+    mutation_body_keys: tuple[str, ...]
+    success_status: int
+    success_body_keys: tuple[str, ...]
+    runtime_identity: RuntimeIdentity
+
+
+def _stale_contract() -> CommandError:
+    return CommandError(ErrorCategory.CONTRACT_STALE)
+
+
+def _require_exact_mapping(value: object, keys: frozenset[str]) -> Mapping[str, object]:
+    if not isinstance(value, dict) or set(value) != keys:
+        raise _stale_contract()
+    return value
+
+
+def _require_str_tuple(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list) or not all(_is_str(item) for item in value):
+        raise _stale_contract()
+    return tuple(value)
+
+
+def _require_nonempty_str_tuple(value: object) -> tuple[str, ...]:
+    result = _require_str_tuple(value)
+    if not result:
+        raise _stale_contract()
+    return result
+
+
+def _require_page_limit(value: object) -> int:
+    if not _is_int(value) or value < 1 or value > MAX_PAGE_LIMIT:
+        raise _stale_contract()
+    return value
+
+
+def _is_digest(value: object) -> bool:
+    return _is_str(value) and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+
+
+def _validate_contract_runtime_identity(value: object) -> RuntimeIdentity:
+    ident = _require_exact_mapping(value, _RUNTIME_IDENTITY_KEYS)
+    if not (_is_str(ident["package_version"]) and ident["package_version"].strip()):
+        raise _stale_contract()
+    if not _is_str(ident["git_commit"]) or not _is_full_commit(ident["git_commit"]):
+        raise _stale_contract()
+    if not (_is_digest(ident["uv_lock_sha256"]) and _is_digest(ident["allowlist_sha256"])):
+        raise _stale_contract()
+    return RuntimeIdentity(
+        package_version=ident["package_version"],
+        git_commit=ident["git_commit"],
+        uv_lock_sha256=ident["uv_lock_sha256"],
+        allowlist_sha256=ident["allowlist_sha256"],
+    )
+
+
+def load_contract(raw: bytes) -> ContractFixture:
+    """Parse and validate the committed contract fixture bytes.
+
+    Any decode, JSON, structural, or type failure fails closed as
+    ``contract_stale``; freshness and live compatibility are separate checks.
+    """
+
+    try:
+        document = json.loads(raw.decode("utf-8"), object_pairs_hook=_reject_duplicate_keys)
+    except (UnicodeDecodeError, ValueError):
+        raise _stale_contract()
+    doc = _require_exact_mapping(document, _CONTRACT_KEYS)
+
+    if not _is_int(doc["schema_version"]) or doc["schema_version"] != CONTRACT_SCHEMA_VERSION:
+        raise _stale_contract()
+    if not (
+        _is_str(doc["generated_at"]) and _is_str(doc["expires_at"])
+        and _is_str(doc["site"]) and _is_str(doc["rest_namespace"])
+    ):
+        raise _stale_contract()
+    plugin_version = doc["plugin_version"]
+    if plugin_version is not None and not _is_str(plugin_version):
+        raise _stale_contract()
+
+    endpoints_raw = _require_exact_mapping(doc["endpoints"], _ENDPOINT_KEYS)
+    if not all(_is_str(v) for v in endpoints_raw.values()):
+        raise _stale_contract()
+
+    if not _is_str(doc["pagination_mode"]) or doc["pagination_mode"] not in _PAGINATION_MODES:
+        raise _stale_contract()
+
+    response_raw = _require_exact_mapping(doc["response_keys"], _RESPONSE_KEY_ENDPOINTS)
+    response_keys = {
+        name: _require_nonempty_str_tuple(response_raw[name]) for name in _RESPONSE_KEY_ENDPOINTS
+    }
+
+    mutation = _require_exact_mapping(doc["mutation"], _MUTATION_KEYS)
+    if not (_is_str(mutation["method"]) and _is_str(mutation["path"])):
+        raise _stale_contract()
+
+    success = _require_exact_mapping(doc["success_markers"], _SUCCESS_KEYS)
+    if not _is_int(success["status"]):
+        raise _stale_contract()
+
+    return ContractFixture(
+        schema_version=doc["schema_version"],
+        generated_at=doc["generated_at"],
+        expires_at=doc["expires_at"],
+        site=doc["site"],
+        rest_namespace=doc["rest_namespace"],
+        plugin_version=plugin_version,
+        endpoints=MappingProxyType(dict(endpoints_raw)),
+        pagination_mode=doc["pagination_mode"],
+        contact_search_page_limit=_require_page_limit(doc["contact_search_page_limit"]),
+        tag_lookup_page_limit=_require_page_limit(doc["tag_lookup_page_limit"]),
+        response_keys=MappingProxyType(response_keys),
+        mutation_method=mutation["method"],
+        mutation_path=mutation["path"],
+        mutation_body_keys=_require_nonempty_str_tuple(mutation["body_keys"]),
+        success_status=success["status"],
+        success_body_keys=_require_str_tuple(success["body_keys"]),
+        runtime_identity=_validate_contract_runtime_identity(doc["runtime_identity"]),
+    )
+
+
+def load_contract_file(path: Path = CONTRACT_PATH) -> ContractFixture:
+    """Read and validate the committed contract fixture (thin impure wrapper).
+
+    A missing fixture is a valid fail-closed state: the operator must rerun the
+    live probe to produce one.
+    """
+
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        raise _stale_contract()
+    return load_contract(raw)
+
+
+def check_contract_fresh(fixture: ContractFixture, now: datetime) -> None:
+    """Reject a fixture that is malformed-dated, over-window, or expired."""
+
+    generated = _parse_contract_utc(fixture.generated_at)
+    expires = _parse_contract_utc(fixture.expires_at)
+    if expires <= generated or expires - generated > MAX_CONTRACT_WINDOW or now >= expires:
+        raise _stale_contract()
+
+
+def _parse_contract_utc(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        raise _stale_contract()
+    if parsed.tzinfo is None:
+        raise _stale_contract()
+    return parsed.astimezone(timezone.utc)
+
+
+def check_contract_compatible(
+    fixture: ContractFixture,
+    *,
+    live_site: str,
+    live_rest_namespace: str,
+    live_plugin_version: str | None,
+    live_response_keys: Mapping[str, Sequence[str]],
+) -> None:
+    """Fail closed unless the live site matches the reviewed fixture.
+
+    Site and REST namespace must match exactly. The plugin version is compared
+    only when both the fixture and the live endpoint expose one. Every reviewed
+    response key must still be present on the corresponding live endpoint.
+    """
+
+    if fixture.site != live_site or fixture.rest_namespace != live_rest_namespace:
+        raise _stale_contract()
+    if (
+        fixture.plugin_version is not None
+        and live_plugin_version is not None
+        and fixture.plugin_version != live_plugin_version
+    ):
+        raise _stale_contract()
+    for endpoint, required in fixture.response_keys.items():
+        observed = live_response_keys.get(endpoint)
+        if observed is None or not set(required).issubset(observed):
+            raise _stale_contract()
 
