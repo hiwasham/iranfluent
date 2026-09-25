@@ -374,12 +374,22 @@ class FluentCrmClient:
                     match = record
         return match
 
-    def fetch_contact_by_id(self, contact_id: int, *, deadline: float) -> ContactRecord:
-        """Re-fetch one subscriber by id for post-write verification."""
+    def fetch_contact_by_id(
+        self, contact_id: int, *, deadline: float, retryable: bool = True
+    ) -> ContactRecord:
+        """Re-fetch one subscriber by id for post-write verification.
+
+        Reconcile and pre-dispatch re-validation reads retry once per the
+        read-only policy (``retryable=True``, the default). Post-dispatch
+        verification reads are single-shot (``retryable=False``): the caller
+        owns the 1/2/4-second cadence and each read is clipped to the shared
+        post-dispatch budget, so an internal retry would both double the reads
+        and consume that budget.
+        """
 
         path = self._contract.endpoints["contact_detail"].replace("{id}", str(contact_id))
         response = self._send(
-            "GET", self._url(path), deadline=deadline, retryable=True, mutation=False
+            "GET", self._url(path), deadline=deadline, retryable=retryable, mutation=False
         )
         if response.status != 200:
             raise self._classified(response, mutation=False)

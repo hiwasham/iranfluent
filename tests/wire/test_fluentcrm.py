@@ -616,3 +616,16 @@ def test_fetch_contact_by_id_returns_record() -> None:
     client = _client(transport)
     record = client.fetch_contact_by_id(7, deadline=_DEADLINE)
     assert record.id == 7 and record.tag_ids == (269,)
+
+
+def test_fetch_contact_by_id_non_retryable_is_single_shot() -> None:
+    # Post-dispatch verification reads pass retryable=False: a retryable 503 that
+    # the default policy would retry once must instead fail after a single GET.
+    slept: list[float] = []
+    transport = FakeTransport([_resp(503), _resp(200, _CONTACT)])
+    client = _client(transport, slept=slept)
+    with pytest.raises(CommandError) as caught:
+        client.fetch_contact_by_id(7, deadline=_DEADLINE, retryable=False)
+    assert caught.value.category is ErrorCategory.REMOTE_SERVER_ERROR
+    assert len(transport.requests) == 1  # no retry
+    assert slept == []

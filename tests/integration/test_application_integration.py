@@ -68,7 +68,7 @@ def _app(store, contact, *, request_id="req-int"):
     return Application(
         client=FakeClient(contact=contact), store=store, tag_definition=TAG,
         audit_hmac_key="key", now=lambda: NOW, monotonic=lambda: 100.0,
-        new_request_id=lambda: request_id,
+        sleep=lambda _: None, new_request_id=lambda: request_id,
     )
 
 

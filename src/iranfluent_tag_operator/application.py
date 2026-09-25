@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from .config import check_approval_fresh
-from .fluentcrm import FluentCrmClient
+from .fluentcrm import ContactRecord, FluentCrmClient
 from .models import (
     OPERATION_ADD_TAG,
     AlreadyAttachedResponse,
@@ -49,6 +49,8 @@ from .models import (
     CommandError,
     ContactView,
     ErrorCategory,
+    ExecuteCommand,
+    ExecuteResponse,
     PreviewCommand,
     PreviewResponse,
     ReconcileCommand,
@@ -56,10 +58,15 @@ from .models import (
     TagDefinition,
     TagView,
 )
-from .state import AuditFields, StateStore
+from .state import AuditFields, PreviewRecord, StateStore
 
 OPERATION_DEADLINE = 20.0
+POST_DISPATCH_DEADLINE = 45.0
 SUBSCRIBED_STATUS = "subscribed"
+VERIFICATION_READ_DELAYS = (1.0, 2.0, 4.0)
+# Contract-defined definitive rejections: one read confirming unchanged state is
+# decisive, so these need no ambiguous 1/2/4-second polling.
+_DEFINITIVE_REJECT_STATUSES = frozenset({400, 404, 409, 422})
 
 
 def _iso(now: datetime) -> str:
@@ -117,6 +124,7 @@ class Application:
         audit_hmac_key: str,
         now: Callable[[], datetime],
         monotonic: Callable[[], float],
+        sleep: Callable[[float], None],
         new_request_id: Callable[[], str],
     ) -> None:
         self._client = client
@@ -125,6 +133,7 @@ class Application:
         self._hmac_key = audit_hmac_key
         self._now = now
         self._monotonic = monotonic
+        self._sleep = sleep
         self._new_request_id = new_request_id
 
     def preview(self, command: PreviewCommand) -> PreviewResponse | AlreadyAttachedResponse:
@@ -271,3 +280,204 @@ class Application:
             else "unknown"
         )
         return ReconcileResponse(command.request_id, outcome, tag_present, _iso(now))
+
+    def execute(self, command: ExecuteCommand) -> ExecuteResponse:
+        """Claim, re-validate, dispatch a single-shot attach, verify, finalize.
+
+        Claiming (and stranded-``dispatching`` rejection) lives in the store; a
+        strand is refused as ``execution_outcome_unknown`` without any new write.
+        This method owns the fresh-state re-validation gate, the exactly-once
+        mutation, and the verification matrix. A dispatched write's outcome is
+        decided only from this method's own post-write reads plus the raised
+        category/status — never from a retry or flag inside the write call, since
+        the client cannot tell an ambiguous 408/425/429 from a definitive 4xx.
+        """
+
+        claim = self._store.claim_preview(command.request_id, self._now())
+        preview = claim.preview
+        try:
+            self._revalidate(preview)
+        except CommandError as exc:
+            self._store.finalize_journal(
+                command.request_id, "rejected", self._now(), http_status=exc.http_status
+            )
+            raise
+        self._store.mark_dispatching(command.request_id, self._now())
+        post_deadline = self._monotonic() + POST_DISPATCH_DEADLINE
+        write_error: CommandError | None = None
+        try:
+            self._client.attach_tag(preview.contact_id, self._tag.id, deadline=post_deadline)
+        except CommandError as exc:
+            write_error = exc
+        return self._finalize_execution(command.request_id, preview, write_error, post_deadline)
+
+    def _revalidate(self, preview: PreviewRecord) -> None:
+        """Re-check policy and live state before dispatch; reject any drift.
+
+        Business approval is re-checked (a fresh execute process must not mutate
+        under an expired review), the live tag must still match the reviewed
+        definition, the contact must still be subscribed, and the stored
+        pre-write tag set must still match exactly. Any divergence fails closed
+        before the write, within the 20-second pre-dispatch deadline.
+        """
+
+        check_approval_fresh(self._tag, self._now())
+        deadline = self._monotonic() + OPERATION_DEADLINE
+        live = self._client.fetch_tag(self._tag.id, deadline=deadline)
+        if (
+            live is None
+            or live.id != self._tag.id
+            or live.title != self._tag.title
+            or live.slug != self._tag.slug
+        ):
+            raise CommandError(ErrorCategory.TAG_DEFINITION_MISMATCH)
+        contact = self._client.fetch_contact_by_id(preview.contact_id, deadline=deadline)
+        if contact.status != SUBSCRIBED_STATUS:
+            raise CommandError(ErrorCategory.CONTACT_STATUS_REJECTED)
+        if set(contact.tag_ids) != set(preview.pre_write_tag_ids):
+            raise CommandError(ErrorCategory.STALE_PREVIEW)
+
+    def _finalize_execution(
+        self,
+        request_id: str,
+        preview: PreviewRecord,
+        write_error: CommandError | None,
+        post_deadline: float,
+    ) -> ExecuteResponse:
+        """Run the verification matrix for the dispatched write and finalize.
+
+        The write response selects the read cadence: a confirmed 2xx success or a
+        contract-defined settled rejection (auth, or a definitive 4xx) is decided
+        by one immediate read; every other response polls at 1, 2, and 4 seconds
+        within the post-dispatch budget. A destructive loss of a pre-write tag is
+        reported as ``verification_failed`` and never repaired.
+        """
+
+        branch = self._write_branch(write_error)
+        if branch == "confirmed":
+            token = self._verify_confirmed(preview, post_deadline)
+        elif branch == "settled":
+            token = self._verify_settled(preview, post_deadline)
+        else:
+            token = self._verify_ambiguous(preview, post_deadline)
+
+        now = self._now()
+        verified_at = _iso(now)
+        status = write_error.http_status if write_error is not None else None
+        if token in ("succeeded", "recovered"):
+            self._store.finalize_journal(
+                request_id, token, now, http_status=status, verification_ts=verified_at
+            )
+            return ExecuteResponse(request_id, token, True, verified_at)
+        self._store.finalize_journal(
+            request_id,
+            "rejected" if token == "rejected" else token,
+            now,
+            http_status=status,
+            verification_ts=verified_at,
+        )
+        if token == "rejected":
+            # Contract-defined rejection (or auth failure) with state confirmed
+            # unchanged: the write response stands as the terminal outcome.
+            raise CommandError(
+                write_error.category,
+                request_id=request_id,
+                http_status=status,
+                mutation_attempted=True,
+            )
+        raise CommandError(
+            ErrorCategory.EXECUTION_VERIFICATION_FAILED
+            if token == "verification_failed"
+            else ErrorCategory.EXECUTION_OUTCOME_UNKNOWN,
+            request_id=request_id,
+            mutation_attempted=True,
+        )
+
+    @staticmethod
+    def _write_branch(write_error: CommandError | None) -> str:
+        """Classify the write response into a verification cadence.
+
+        ``confirmed`` (2xx) and a contract-defined ``settled`` rejection (401/403
+        auth, or 400/404/409/422) each take one immediate read; every other
+        post-dispatch condition is ``ambiguous`` and polls at 1/2/4s.
+        """
+
+        if write_error is None:
+            return "confirmed"
+        if write_error.category in (
+            ErrorCategory.AUTHENTICATION_FAILED,
+            ErrorCategory.AUTHORIZATION_FAILED,
+        ):
+            return "settled"
+        if (
+            write_error.category is ErrorCategory.REMOTE_REJECTED
+            and write_error.http_status in _DEFINITIVE_REJECT_STATUSES
+        ):
+            return "settled"
+        return "ambiguous"
+
+    def _verify_confirmed(self, preview: PreviewRecord, deadline: float) -> str:
+        contact = self._read_once(preview.contact_id, deadline)
+        if contact is None:
+            return "outcome_unknown"
+        state = self._evaluate(contact.tag_ids, preview.pre_write_tag_ids)
+        return "succeeded" if state == "success" else "verification_failed"
+
+    def _verify_settled(self, preview: PreviewRecord, deadline: float) -> str:
+        contact = self._read_once(preview.contact_id, deadline)
+        if contact is None:
+            return "outcome_unknown"
+        state = self._evaluate(contact.tag_ids, preview.pre_write_tag_ids)
+        if state == "success":
+            return "recovered"
+        if state == "verification_failed":
+            return "verification_failed"
+        return "rejected"
+
+    def _verify_ambiguous(self, preview: PreviewRecord, deadline: float) -> str:
+        for delay in VERIFICATION_READ_DELAYS:
+            if not self._bounded_wait(delay, deadline):
+                break
+            contact = self._read_once(preview.contact_id, deadline)
+            if contact is None:
+                continue
+            state = self._evaluate(contact.tag_ids, preview.pre_write_tag_ids)
+            if state == "verification_failed":
+                return "verification_failed"
+            if state == "success":
+                return "recovered"
+        return "outcome_unknown"
+
+    def _evaluate(
+        self, post_tag_ids: tuple[int, ...], pre_tag_ids: tuple[int, ...]
+    ) -> str:
+        """Classify observed post-write tags; a destructive loss beats the target check.
+
+        Extra tags added concurrently by another actor are tolerated (audit-only,
+        not surfaced): the predicate requires only ``pre ⊆ post`` and the target.
+        """
+
+        pre_set, post_set = set(pre_tag_ids), set(post_tag_ids)
+        if not pre_set <= post_set:
+            return "verification_failed"
+        if self._tag.id in post_set:
+            return "success"
+        return "absent"
+
+    def _read_once(self, contact_id: int, deadline: float) -> ContactRecord | None:
+        """One single-shot verification read; a read failure is not decisive."""
+
+        try:
+            return self._client.fetch_contact_by_id(
+                contact_id, deadline=deadline, retryable=False
+            )
+        except CommandError:
+            return None
+
+    def _bounded_wait(self, delay: float, deadline: float) -> bool:
+        """Sleep ``delay`` only if the whole wait fits in the remaining budget."""
+
+        if delay >= deadline - self._monotonic():
+            return False
+        self._sleep(delay)
+        return True

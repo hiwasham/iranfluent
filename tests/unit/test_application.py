@@ -104,7 +104,8 @@ class FakeStore:
 def _app(client, store, *, now=NOW):
     return Application(
         client=client, store=store, tag_definition=TAG, audit_hmac_key="key",
-        now=lambda: now, monotonic=lambda: 100.0, new_request_id=lambda: "req-new",
+        now=lambda: now, monotonic=lambda: 100.0, sleep=lambda _: None,
+        new_request_id=lambda: "req-new",
     )
 
 
@@ -165,7 +166,7 @@ def test_preview_tag_disabled():
         client=FakeClient(), store=store,
         tag_definition=TagDefinition(**{**TAG.__dict__, "enabled": False}),
         audit_hmac_key="key", now=lambda: NOW, monotonic=lambda: 100.0,
-        new_request_id=lambda: "req-new",
+        sleep=lambda _: None, new_request_id=lambda: "req-new",
     )
     with pytest.raises(CommandError) as exc:
         app.preview(PreviewCommand(email="dana@example.com", tag_key="vocab_b1"))
