@@ -393,7 +393,13 @@ class FluentCrmClient:
         )
         if response.status != 200:
             raise self._classified(response, mutation=False)
-        return _parse_contact_item(self._read_json(response))
+        record = _parse_contact_item(self._read_json(response))
+        if record.id != contact_id:
+            # The detail endpoint must echo the requested id. A mismatch means a
+            # proxy or cache returned a different subscriber, so this record's tag
+            # set cannot be trusted for re-validation or post-write verification.
+            raise _invalid()
+        return record
 
     def fetch_tag(self, tag_id: int, *, deadline: float) -> TagRecord | None:
         """Return the reviewed tag object by id, else ``None``."""

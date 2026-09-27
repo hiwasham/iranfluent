@@ -729,24 +729,39 @@ class StateStore:
 
         Sets ``mutation_attempted`` so a later crash is reconciled as an unknown
         outcome rather than assumed un-attempted. Emits ``execution_dispatching``.
-        Only a ``claimed`` journal is a valid precondition.
+        A concurrent execute that already advanced this journal past ``claimed``
+        (a benign race-loser) is audited as ``execution_rejected`` and rejected
+        as ``execution_outcome_unknown``: the winner's write may already be in
+        flight for the same contact, so this fails closed toward reconcile rather
+        than a bland invalid-state. A missing journal is genuine corruption.
         """
 
+        reject: ErrorCategory | None = None
         with self._txn() as cur:
             journal = self._locked_journal(cur, request_id)
-            if journal is None or journal.state != "claimed":
+            if journal is None:
                 raise _invalid()
             preview = self._locked_preview(cur, request_id)
-            cur.execute(
-                "UPDATE execution_journal SET state='dispatching', "
-                "mutation_attempted=1, dispatched_at=? "
-                "WHERE request_id=? AND state='claimed'",
-                (self._iso(now), request_id),
-            )
-            fields = (self._preview_fields(preview)
-                      if preview is not None
-                      else AuditFields(request_id=request_id))
-            self._insert_audit(cur, "execution_dispatching", fields, now)
+            if journal.state != "claimed":
+                reject = ErrorCategory.EXECUTION_OUTCOME_UNKNOWN
+                fields = (self._preview_fields(preview, error_category=reject.value)
+                          if preview is not None
+                          else AuditFields(request_id=request_id,
+                                           error_category=reject.value))
+                self._insert_audit(cur, "execution_rejected", fields, now)
+            else:
+                cur.execute(
+                    "UPDATE execution_journal SET state='dispatching', "
+                    "mutation_attempted=1, dispatched_at=? "
+                    "WHERE request_id=? AND state='claimed'",
+                    (self._iso(now), request_id),
+                )
+                fields = (self._preview_fields(preview)
+                          if preview is not None
+                          else AuditFields(request_id=request_id))
+                self._insert_audit(cur, "execution_dispatching", fields, now)
+        if reject is not None:
+            raise CommandError(reject, request_id=request_id, mutation_attempted=True)
 
     def finalize_journal(
         self,

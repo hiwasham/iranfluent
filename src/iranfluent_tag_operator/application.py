@@ -16,7 +16,7 @@ the diagram lives here so execute sits beside it):
                                         v
     execute ── claim_preview ──> [journal: claimed]
                     |
-              mark_dispatching ──> [journal: dispatching]  (starts 45s post-dispatch deadline)
+              mark_dispatching ──> [journal: dispatching]  (write gets a 45s deadline; verification gets its own fresh 45s budget after the write returns)
                     |
               attach_tag POST (single-shot, never retried)
                     |
@@ -303,13 +303,13 @@ class Application:
             )
             raise
         self._store.mark_dispatching(command.request_id, self._now())
-        post_deadline = self._monotonic() + POST_DISPATCH_DEADLINE
+        write_deadline = self._monotonic() + POST_DISPATCH_DEADLINE
         write_error: CommandError | None = None
         try:
-            self._client.attach_tag(preview.contact_id, self._tag.id, deadline=post_deadline)
+            self._client.attach_tag(preview.contact_id, self._tag.id, deadline=write_deadline)
         except CommandError as exc:
             write_error = exc
-        return self._finalize_execution(command.request_id, preview, write_error, post_deadline)
+        return self._finalize_execution(command.request_id, preview, write_error)
 
     def _revalidate(self, preview: PreviewRecord) -> None:
         """Re-check policy and live state before dispatch; reject any drift.
@@ -342,34 +342,38 @@ class Application:
         request_id: str,
         preview: PreviewRecord,
         write_error: CommandError | None,
-        post_deadline: float,
     ) -> ExecuteResponse:
         """Run the verification matrix for the dispatched write and finalize.
 
         The write response selects the read cadence: a confirmed 2xx success or a
         contract-defined settled rejection (auth, or a definitive 4xx) is decided
-        by one immediate read; every other response polls at 1, 2, and 4 seconds
-        within the post-dispatch budget. A destructive loss of a pre-write tag is
-        reported as ``verification_failed`` and never repaired.
+        by an immediate read (a confirmed 2xx then polls at 1/2/4s for
+        read-replica lag); every other response polls at 1, 2, and 4 seconds. The
+        verification budget is computed fresh here, after the write returns, so a
+        slow write can never starve the read-back of its own full window. A
+        destructive loss of a pre-write tag is reported as ``verification_failed``
+        and never repaired. A post-dispatch failure to persist the terminal audit
+        surfaces as ``audit_incomplete`` (mutation dispatched, record incomplete).
         """
 
         branch = self._write_branch(write_error)
+        verify_deadline = self._monotonic() + POST_DISPATCH_DEADLINE
         if branch == "confirmed":
-            token = self._verify_confirmed(preview, post_deadline)
+            token = self._verify_confirmed(preview, verify_deadline)
         elif branch == "settled":
-            token = self._verify_settled(preview, post_deadline)
+            token = self._verify_settled(preview, verify_deadline)
         else:
-            token = self._verify_ambiguous(preview, post_deadline)
+            token = self._verify_ambiguous(preview, verify_deadline)
 
         now = self._now()
         verified_at = _iso(now)
         status = write_error.http_status if write_error is not None else None
         if token in ("succeeded", "recovered"):
-            self._store.finalize_journal(
+            self._finalize_journal_durable(
                 request_id, token, now, http_status=status, verification_ts=verified_at
             )
             return ExecuteResponse(request_id, token, True, verified_at)
-        self._store.finalize_journal(
+        self._finalize_journal_durable(
             request_id,
             "rejected" if token == "rejected" else token,
             now,
@@ -392,6 +396,36 @@ class Application:
             request_id=request_id,
             mutation_attempted=True,
         )
+
+    def _finalize_journal_durable(
+        self,
+        request_id: str,
+        outcome: str,
+        now: datetime,
+        *,
+        http_status: int | None,
+        verification_ts: str | None,
+    ) -> None:
+        """Persist the terminal journal event; a durability failure fails closed.
+
+        By the time any terminal event is written the mutation has already been
+        dispatched, so a lost audit row must never surface as a bland
+        ``local_state_busy``. It is a dispatched-but-unaudited write:
+        ``audit_incomplete`` (mutation_attempted, reconcile-directing).
+        """
+
+        try:
+            self._store.finalize_journal(
+                request_id, outcome, now,
+                http_status=http_status, verification_ts=verification_ts,
+            )
+        except CommandError as exc:
+            raise CommandError(
+                ErrorCategory.AUDIT_INCOMPLETE,
+                request_id=request_id,
+                http_status=http_status,
+                mutation_attempted=True,
+            ) from exc
 
     @staticmethod
     def _write_branch(write_error: CommandError | None) -> str:
@@ -417,11 +451,30 @@ class Application:
         return "ambiguous"
 
     def _verify_confirmed(self, preview: PreviewRecord, deadline: float) -> str:
-        contact = self._read_once(preview.contact_id, deadline)
-        if contact is None:
-            return "outcome_unknown"
-        state = self._evaluate(contact.tag_ids, preview.pre_write_tag_ids)
-        return "succeeded" if state == "success" else "verification_failed"
+        """Verify a confirmed 2xx write, polling for read-replica lag.
+
+        The write already returned success, so the target is usually visible on
+        the first (immediate) read; the 1/2/4s cadence only costs time when a
+        replica lags or a read transiently fails. A destructive loss of a
+        pre-write tag is decisive at once. A clean read with the target still
+        absent after the full cadence is a real ``verification_failed``; only
+        all-unreadable reads stay ``outcome_unknown``.
+        """
+
+        saw_absent = False
+        for delay in (0.0,) + VERIFICATION_READ_DELAYS:
+            if delay and not self._bounded_wait(delay, deadline):
+                break
+            contact = self._read_once(preview.contact_id, deadline)
+            if contact is None:
+                continue
+            state = self._evaluate(contact.tag_ids, preview.pre_write_tag_ids)
+            if state == "success":
+                return "succeeded"
+            if state == "verification_failed":
+                return "verification_failed"
+            saw_absent = True
+        return "verification_failed" if saw_absent else "outcome_unknown"
 
     def _verify_settled(self, preview: PreviewRecord, deadline: float) -> str:
         contact = self._read_once(preview.contact_id, deadline)

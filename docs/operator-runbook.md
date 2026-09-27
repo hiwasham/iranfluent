@@ -37,9 +37,12 @@ a missing key fails closed (exit 5) before the CLI ever runs.
 
 ## Configuration — committed, non-secret
 
-- `config/allowlist.*` — reviewed tag allowlist. Exactly one entry (`vocab_b1`)
+- `config/tags.json` — reviewed tag allowlist. Exactly one entry (`vocab_b1`)
   in v1. Carries business purpose, risk notes, and the time-limited review
-  fields (`business_reviewed_at`, `business_review_expires_at`).
+  fields (`business_reviewed_at`, `business_review_expires_at`). The CLI
+  fails closed (rejects `preview` and `execute`) once `now >=
+  business_review_expires_at`, so a lapsed review must be refreshed and
+  committed before any run.
 - `config/fluentcrm-contract.json` — redacted API contract fixture. **Not
   committed by autonomous work**; produced by the live contract probe (T3/T11).
 - `uv.lock` — committed; run with `--locked`. The CLI records package version,
@@ -59,7 +62,9 @@ a missing key fails closed (exit 5) before the CLI ever runs.
 4. **cancel** `{"command":"cancel","request_id":"…"}` on decline.
 5. **reconcile** `{"command":"reconcile","request_id":"…"}` **only** when a prior
    execute returned a `mutation_attempted` error. Never re-run `execute` for that
-   request id.
+   request id. This is defense in depth, not a fragile rule: the execution
+   journal already refuses a re-run of a dispatched request as
+   `execution_outcome_unknown` and never re-sends the write.
 
 ## Exit codes
 

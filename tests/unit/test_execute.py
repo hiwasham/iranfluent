@@ -92,8 +92,9 @@ class FakeClient:
             raise self._write
 
 class FakeStore:
-    def __init__(self, *, claim=None):
+    def __init__(self, *, claim=None, finalize_error=None):
         self._claim = claim if claim is not None else _Claim()
+        self._finalize_error = finalize_error
         self.marked: list[str] = []
         self.finalized: list[tuple] = []
 
@@ -108,6 +109,8 @@ class FakeStore:
     def finalize_journal(self, request_id, outcome, now, *, http_status=None,
                          verification_ts=None):
         self.finalized.append((outcome, http_status, verification_ts))
+        if self._finalize_error is not None:
+            raise self._finalize_error
 
 
 def _app(client, store, *, now=NOW, monotonic=None, sleep=None):
@@ -180,7 +183,7 @@ def test_revalidate_read_failure_is_pre_dispatch_rejection():
 ISO_NOW = "2026-08-15T12:00:00+00:00"
 
 
-# --- confirmed 2xx: one immediate read decides ---------------------------------
+# --- confirmed 2xx: immediate read, then 1/2/4s polling for read-replica lag ---
 
 def test_confirmed_success():
     store = FakeStore()
@@ -193,32 +196,63 @@ def test_confirmed_success():
     assert store.finalized == [("succeeded", None, ISO_NOW)]
 
 
-def test_confirmed_target_absent_is_verification_failed():
+def test_confirmed_lag_then_success_polls_and_succeeds():
     store = FakeStore()
-    client = FakeClient(write=None, reads=[ABSENT_READ])
-    with pytest.raises(CommandError) as exc:
-        _app(client, store).execute(CMD)
-    assert exc.value.category is ErrorCategory.EXECUTION_VERIFICATION_FAILED
-    assert exc.value.mutation_attempted is True
-    assert client.posts == 1 and store.finalized == [("verification_failed", None, ISO_NOW)]
+    sleeps: list[float] = []
+    # Target absent on the first read (replica lag), present on the second.
+    client = FakeClient(write=None, reads=[ABSENT_READ, SUCCESS_READ])
+    resp = _app(client, store, sleep=sleeps.append).execute(CMD)
+    assert resp.outcome == "succeeded" and resp.tag_present is True
+    assert sleeps == [1.0] and client.verify_reads == 2
+    assert store.finalized == [("succeeded", None, ISO_NOW)]
 
 
-def test_confirmed_prior_tag_lost_is_verification_failed():
+def test_confirmed_prior_tag_lost_is_verification_failed_at_once():
     store = FakeStore()
+    sleeps: list[float] = []
     client = FakeClient(write=None, reads=[LOST_READ])
     with pytest.raises(CommandError) as exc:
-        _app(client, store).execute(CMD)
+        _app(client, store, sleep=sleeps.append).execute(CMD)
     assert exc.value.category is ErrorCategory.EXECUTION_VERIFICATION_FAILED
-    assert client.posts == 1
+    assert exc.value.mutation_attempted is True
+    assert client.posts == 1 and sleeps == []  # destructive loss is decisive
+    assert store.finalized == [("verification_failed", None, ISO_NOW)]
 
 
-def test_confirmed_unreadable_is_outcome_unknown():
+def test_confirmed_target_absent_after_polling_is_verification_failed():
     store = FakeStore()
-    client = FakeClient(write=None, reads=[CommandError(ErrorCategory.REMOTE_TRANSPORT_FAILED)])
+    sleeps: list[float] = []
+    client = FakeClient(write=None, reads=[ABSENT_READ, ABSENT_READ, ABSENT_READ, ABSENT_READ])
     with pytest.raises(CommandError) as exc:
-        _app(client, store).execute(CMD)
+        _app(client, store, sleep=sleeps.append).execute(CMD)
+    assert exc.value.category is ErrorCategory.EXECUTION_VERIFICATION_FAILED
+    assert exc.value.mutation_attempted is True
+    assert sleeps == [1.0, 2.0, 4.0] and client.verify_reads == 4
+    assert store.finalized == [("verification_failed", None, ISO_NOW)]
+
+
+def test_confirmed_all_unreadable_is_outcome_unknown():
+    store = FakeStore()
+    sleeps: list[float] = []
+    err = CommandError(ErrorCategory.REMOTE_TRANSPORT_FAILED)
+    client = FakeClient(write=None, reads=[err, err, err, err])
+    with pytest.raises(CommandError) as exc:
+        _app(client, store, sleep=sleeps.append).execute(CMD)
     assert exc.value.category is ErrorCategory.EXECUTION_OUTCOME_UNKNOWN
-    assert client.posts == 1 and store.finalized == [("outcome_unknown", None, ISO_NOW)]
+    assert sleeps == [1.0, 2.0, 4.0] and client.verify_reads == 4
+    assert store.finalized == [("outcome_unknown", None, ISO_NOW)]
+
+
+def test_confirmed_budget_exhausted_after_first_absent_is_verification_failed():
+    store = FakeStore()
+    sleeps: list[float] = []
+    # The advancing clock spends the verification budget during the first wait,
+    # so only the immediate read runs; a clean absent read then stands.
+    client = FakeClient(write=None, reads=[ABSENT_READ])
+    with pytest.raises(CommandError) as exc:
+        _app(client, store, monotonic=_advancing_clock(), sleep=sleeps.append).execute(CMD)
+    assert exc.value.category is ErrorCategory.EXECUTION_VERIFICATION_FAILED
+    assert sleeps == [] and client.verify_reads == 1
 
 # --- settled write (auth, or definitive 4xx): one immediate read, no polling ---
 
@@ -349,4 +383,53 @@ def test_non_definitive_4xx_takes_ambiguous_path():
     )
     resp = _app(client, store, sleep=sleeps.append).execute(CMD)
     assert resp.outcome == "recovered" and sleeps == [1.0]
+
+
+# --- post-dispatch audit durability: a lost terminal write -> audit_incomplete -
+
+def test_finalize_durability_failure_is_audit_incomplete():
+    # The write succeeded and verified, but persisting the terminal audit row
+    # fails (DB busy). A dispatched-but-unaudited write must never surface as a
+    # bland local_state_busy: it is audit_incomplete, reconcile-directing.
+    store = FakeStore(finalize_error=CommandError(ErrorCategory.LOCAL_STATE_BUSY))
+    client = FakeClient(write=None, reads=[SUCCESS_READ])
+    with pytest.raises(CommandError) as exc:
+        _app(client, store).execute(CMD)
+    assert exc.value.category is ErrorCategory.AUDIT_INCOMPLETE
+    assert exc.value.mutation_attempted is True
+    assert exc.value.exit_code == 5
+    assert client.posts == 1
+    assert store.finalized == [("succeeded", None, ISO_NOW)]  # the attempt was made
+
+
+def _scripted_clock(values):
+    """Monotonic that returns each queued value, then holds the last one."""
+
+    it = iter(values)
+    held = {"t": 0.0}
+
+    def clock():
+        try:
+            held["t"] = next(it)
+        except StopIteration:
+            pass
+        return held["t"]
+
+    return clock
+
+
+def test_slow_write_does_not_starve_verification_budget():
+    # ~44s elapse between claiming the write budget and the write returning; the
+    # verification budget is computed fresh AFTER the write, so the read-back
+    # still runs. Clock reads: revalidate, write-deadline, verify-deadline, wait.
+    store = FakeStore()
+    sleeps: list[float] = []
+    client = FakeClient(
+        write=CommandError(ErrorCategory.REMOTE_SERVER_ERROR, http_status=503),
+        reads=[SUCCESS_READ],
+    )
+    clock = _scripted_clock([0.0, 0.0, 44.0, 44.0])
+    resp = _app(client, store, monotonic=clock, sleep=sleeps.append).execute(CMD)
+    assert resp.outcome == "recovered" and resp.tag_present is True
+    assert sleeps == [1.0] and client.verify_reads == 1
 

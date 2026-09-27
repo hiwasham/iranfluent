@@ -489,13 +489,15 @@ def test_mark_dispatching_missing_journal_is_invalid(store: StateStore) -> None:
     assert e.value.category is ErrorCategory.LOCAL_STATE_INVALID
 
 
-def test_mark_dispatching_wrong_state_is_invalid(store: StateStore) -> None:
+def test_mark_dispatching_loser_race_is_outcome_unknown(store: StateStore) -> None:
     _create(store)
     store.claim_preview("req-1", NOW)
     store.mark_dispatching("req-1", NOW)
     with pytest.raises(CommandError) as e:
-        store.mark_dispatching("req-1", NOW)  # already dispatching
-    assert e.value.category is ErrorCategory.LOCAL_STATE_INVALID
+        store.mark_dispatching("req-1", NOW)  # already dispatching (race loser)
+    assert e.value.category is ErrorCategory.EXECUTION_OUTCOME_UNKNOWN
+    assert e.value.mutation_attempted is True
+    assert _events(store)[-1][1] == "execution_rejected"
 
 
 def test_mark_dispatching_orphan_journal_uses_fallback(tmp_path: Path) -> None:
@@ -505,6 +507,19 @@ def test_mark_dispatching_orphan_journal_uses_fallback(tmp_path: Path) -> None:
     _delete_preview(path, "req-1")
     store.mark_dispatching("req-1", NOW)
     assert store.get_journal("req-1").state == "dispatching"
+    store.close()
+
+
+def test_mark_dispatching_loser_race_orphan_preview_uses_fallback(tmp_path: Path) -> None:
+    store, path = _open(tmp_path)
+    _create(store)
+    store.claim_preview("req-1", NOW)
+    store.mark_dispatching("req-1", NOW)
+    _delete_preview(path, "req-1")  # loser race with the preview row already gone
+    with pytest.raises(CommandError) as e:
+        store.mark_dispatching("req-1", NOW)
+    assert e.value.category is ErrorCategory.EXECUTION_OUTCOME_UNKNOWN
+    assert _events(store)[-1][1] == "execution_rejected"
     store.close()
 
 
