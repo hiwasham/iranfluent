@@ -51,3 +51,5 @@ __pycache__/
 htmlcov/
 *.egg-info/
 .venv/
+
+.claude/worktrees/
