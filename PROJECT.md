@@ -3,7 +3,7 @@
 > Open this file first when you feel lost. It holds **status + next action**.
 > It never duplicates the deep docs — it points to them (see *Canonical sources*).
 
-Last updated: 2026-10-09 · Owner: Hiwa (solo)
+Last updated: 2026-10-10 · Owner: Hiwa (solo)
 
 ## North star
 
@@ -29,9 +29,9 @@ CEO direction resolved 2026-09-27 via `/plan-ceo-review`: standardize on the
 | Students | ~3,000 paying |
 | Team | Hiwa, solo (was a 10-person team) |
 | Core stack | WordPress + LearnDash + GamiPress + BuddyBoss + FluentCRM |
-| Two installs | `my.iranfluent.com` (LMS/members — 179 plugins, 60 active) · `iranfluent.com` (marketing) |
-| LMS content | 80 courses · 1,716 lessons · 2,680 topics · 1,394 questions · 43 groups |
-| Audience | 18,158 WP users · 17,097 FluentCRM subscribers |
+| Two installs | `my.iranfluent.com` (LMS/members — 178 plugins, 59 active, 119 inactive · 53 REST namespaces) · `iranfluent.com` (marketing — Elementor/Astra/ZipWP · 34 REST namespaces) |
+| LMS content | 80 courses · 1,716 lessons · 2,680 topics · 309 quizzes · 1,394 questions · LD 43 groups / BB 48 groups |
+| Audience | 18,160 WP users · 17,100 FluentCRM subscribers (subscribed 13,273 · pending 3,819) · 100 tags (75 non-empty) · 43 lists (29 non-empty) · 12 nav menus |
 | Commerce | WooCommerce + Zarinpal — **dormant by design**, reactivated at launch |
 | Gamification | GamiPress — **KEEP** (major active engine) |
 | MRR goal | Growth push $500 → $7,500/mo, gated on consolidation first |
@@ -41,7 +41,7 @@ CEO direction resolved 2026-09-27 via `/plan-ceo-review`: standardize on the
 | # | Tranche | Status |
 |---|---|---|
 | 0 | Current-state map + live read-only data pull | ✅ done 2026-09-27 |
-| 1 | Remove 3 confirmed-dead plugins: **EDD · LearnPress · Restrict Content Pro** | ⬜ **NEXT** — live-prod write; verify what each touches first |
+| 1 | Remove confirmed-dead plugins — **target set must be RE-DERIVED** (see note) | ⬜ **NEXT** — live-prod write; verify what each touches first |
 | 2 | WooCommerce → FluentCart migration | ⬜ parked (heaviest/riskiest; IP-coupled to payments) |
 | 3 | Growth engine: flashcard 15K-vocab funnel · AI RAG tutor · retention · upsells | ⬜ parked (this is what *realizes the north star*) |
 
@@ -56,20 +56,29 @@ CEO direction resolved 2026-09-27 via `/plan-ceo-review`: standardize on the
 ## Still-owed data (blocked)
 
 - cPanel-gated infra: plan/quota, disk + inode, CPU/RAM/LVE, PHP/MySQL versions, cron, email accounts, backup config
-- `iranfluent.com`'s own app password (marketing site — not yet obtained)
-- FluentCRM per-tag / per-list subscriber counts
+
+## ⚠️ Tranche-1 correction (verified 2026-10-10, read-only)
+
+The old target set (**EDD · LearnPress · Restrict Content Pro**) is **WRONG** — none
+are installed on `my.iranfluent.com` under real slugs. The ONLY EDD-family trace is
+one orphaned INACTIVE plugin `integrate-zarinpal-edd`. `gamipress-buddyboss-integration`
+was already removed (the 2026-10-10 LMS-outage culprit). **Re-derive the dead-plugin
+list from the live 119 inactive plugins before any removal** — do not act on the old
+three. The full active/inactive inventory lives in the gbrain map page (see below).
 
 ## Canonical sources (point, don't copy)
 
 | What | Where |
 |---|---|
 | Full strategy / design doc | gbrain page **2132** (`design-docs/iranfluent/2026-06-20-root-master-design-...`) |
+| Full two-site technical MAP | local `maps/iranfluent-full-site-map-2026-10-10.md` · mirrored to gbrain slug `maps/iranfluent/2026-10-10-full-site-map` |
 | Operational current state | memory `iranfluent-live-access-deferred.md` |
 | Infra fingerprint | `hostdl.com.json` (0600 — **never commit**) |
 | All credentials | Infisical vault `http://100.116.105.2:8080` (never in repo) |
 
 ## Next action
 
-Resume at **Tranche 1**: for each of EDD / LearnPress / Restrict Content Pro, list
-what it still touches on `my.iranfluent.com`, then deactivate → remove (one at a
-time, confirm before each).
+Resume at **Tranche 1**, but FIRST re-derive the dead-plugin target set from the live
+119 inactive plugins (the old EDD/LearnPress/RCP set is invalid — see correction above).
+For each candidate, list what it still touches on `my.iranfluent.com`, then
+deactivate → remove one at a time, confirm before each (live-prod destructive write).
