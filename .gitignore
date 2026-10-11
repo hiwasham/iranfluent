@@ -40,7 +40,9 @@ yarn-error.log*
 # Cache
 .cache/
 .parcel-cache/
-.gstack/
+# gstack scratch, but keep the committed pregate policy visible to the gate
+.gstack/*
+!.gstack/pregate.json
 
 # Python
 __pycache__/

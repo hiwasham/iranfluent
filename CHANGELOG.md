@@ -5,6 +5,12 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to a four-part `W.X.Y.Z` version scheme.
 
+## [1.0.0.1] - 2026-10-11
+
+### Changed
+
+- Repo documentation now describes IranFluent as the dual-project repo it is: both `README.md` and `CLAUDE.md` reframed from scraper-only into TPRS scraper + FluentCRM tag operator, with a tag-operator routing rule and pointers to `docs/operator-runbook.md`.
+
 ## [1.0.0.0] - 2026-09-28
 
 ### Added

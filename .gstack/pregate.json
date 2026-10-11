@@ -1,0 +1,10 @@
+{
+  "$schema": "https://github.com/garrytan/gstack/docs/pregate.md#pregate-v1",
+  "runner": null,
+  "dependencies": {
+    "**/*.md": [],
+    "VERSION": [],
+    ".gstack/**": [],
+    ".gitignore": []
+  }
+}
